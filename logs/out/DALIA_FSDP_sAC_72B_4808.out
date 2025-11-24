@@ -1,0 +1,48 @@
+idr_torch is not installed, but its OK !! :)
+>>> Training on 32 processes
+world size:32, GBS:64, BSperDev:2, seq. length:4096, sAC ratio:3/4, grad accumulation:1, compile:False
+Time to load and initialize the model and its tokenizer: 4.124s
+Time to shard the model: 2085.641s
+Time to transfer the model to GPU: 0.073s
+number of parameters: 72706203648
+Pre-loop Model MaxMemory for GPU:0 17.74545431137085 GBytes
+Time to load dataset and initialize dataloader: 0.507s
+global batch size: 64 - mini batch size: 2
+DATALOADER 8 True True True 2 False 
+Optimizer: AdamW (
+Parameter Group 0
+    amsgrad: False
+    betas: (0.9, 0.999)
+    capturable: False
+    decoupled_weight_decay: True
+    differentiable: False
+    eps: 1e-05
+    foreach: None
+    fused: None
+    lr: 1e-05
+    maximize: False
+    weight_decay: 0.1
+)
+Step 10 / 100 | Loss: 0.925 | Perplexity: 6726069780480.000 | LR: 3.067e-08 | Wall: 72.408
+Step 20 / 100 | Loss: 0.918 | Perplexity: inf | LR: 6.476e-08 | Wall: 52.261
+Step 30 / 100 | Loss: 0.911 | Perplexity: inf | LR: 9.884e-08 | Wall: 52.231
+Step 40 / 100 | Loss: 0.913 | Perplexity: inf | LR: 1.329e-07 | Wall: 52.235
+Step 50 / 100 | Loss: 0.910 | Perplexity: inf | LR: 1.670e-07 | Wall: 52.135
+Step 60 / 100 | Loss: 0.903 | Perplexity: inf | LR: 2.011e-07 | Wall: 52.198
+Step 70 / 100 | Loss: 0.864 | Perplexity: inf | LR: 2.352e-07 | Wall: 52.187
+Step 80 / 100 | Loss: 0.822 | Perplexity: inf | LR: 2.693e-07 | Wall: 52.522
+Step 90 / 100 | Loss: 0.813 | Perplexity: inf | LR: 3.033e-07 | Wall: 52.399
+Step 100 / 100 | Loss: 0.762 | Perplexity: inf | LR: 3.374e-07 | Wall: 52.690
+>>> Training complete in: 0:09:08.441511
+>>> Training performance time: min 5.1487648487091064 avg 5.228762077562736 seconds (+/- 0.06371094155742732)
+>>> Forward performance time: min 1.367100715637207 avg 1.403418692675504 seconds (+/- 0.00010021767277651326)
+>>> Backward performance time: min 3.762667417526245 avg 3.8253406490942443 seconds (+/- 0.00010021767277651326)
+>>> Loading performance time: min 0.0003542900085449219 avg 0.0007730469559178208 seconds (+/- 0.00010021767277651326)
+>>> ########## BENCHMARKING #####################################
+(Measured on 100 steps) Step time Avg : 5.2170729637146 s
+Estimated Training Time (2 epochs bs 128) : 21.268267448743185 h
+MaxMemory for GPU:0 120.37953281402588 GBytes
+RANK: 0
+VmPeak:  614321172 kB  VmHWM:  14495336 kB
+NCCL version 2.27.3+cuda12.9
+Sun Nov 23 04:27:14 PM CET 2025

@@ -1,0 +1,28 @@
+idr_torch is not installed, but its OK !! :)
+>>> Training on 64 processes
+world size:64, GBS:128, BSperDev:2, seq. length:4096, sAC ratio:3/4, grad accumulation:1, compile:True
+Time to load and initialize the model and its tokenizer: 4.206s
+Time to shard the model: 587.542s
+Time to transfer the model to GPU: 0.047s
+Time to instantiate torch.compile: 0.056s
+number of parameters: 32763876352
+Pre-loop Model MaxMemory for GPU:0 7.7079973220825195 GBytes
+Time to load dataset and initialize dataloader: 30.029s
+global batch size: 128 - mini batch size: 2
+DATALOADER 4 True True True 3 False 
+Optimizer: AdamW (
+Parameter Group 0
+    amsgrad: False
+    betas: (0.9, 0.999)
+    capturable: False
+    decoupled_weight_decay: True
+    differentiable: False
+    eps: 1e-05
+    foreach: None
+    fused: None
+    lr: 1e-05
+    maximize: False
+    weight_decay: 0.1
+)
+NCCL version 2.27.3+cuda12.9
+Sun Nov 23 14:28:09 CET 2025

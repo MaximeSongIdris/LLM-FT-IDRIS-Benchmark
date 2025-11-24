@@ -1,0 +1,23 @@
+world size: 32, GBS: 64, BSperDev: 8, grad accumulation:1, sequence length: 4096, grad_check: False,  attention: flash_attention_2, Liger-Kernels: False
+[NeMo I 2025-11-24 17:11:51 nemo_logging:393] Using passed HF dataset Dataset({
+        features: ['id', 'messages', 'source'],
+        num_rows: 939343
+    })
+[NeMo I 2025-11-24 17:11:53 nemo_logging:393] use_linear_ce_loss: True
+Using FSDP2 with DP=8, TP=4, CP=1
+[NeMo I 2025-11-24 17:11:53 nemo_logging:393] Using default TP plan for parallelization. It is compatible with huggingface llama3-style models.
+[NeMo I 2025-11-24 17:11:53 nemo_logging:393] Experiments will be logged at /lustre/work/sos/ssos040/nemo_experiments/default/2025-11-24_17-11-53
+[NeMo I 2025-11-24 17:12:00 nemo_logging:393] Configuring model with attn_implementation: flash_attention_2
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+Pre-loop Model MaxMemory for GPU:0 8.365150928497314 GBytes
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+Training: |          | 0/? [00:00<?, ?it/s]Training:   0%|          | 0/14678 [00:00<?, ?it/s]Epoch 0:   0%|          | 0/14678 [00:00<?, ?it/s] Mon Nov 24 05:14:21 PM CET 2025

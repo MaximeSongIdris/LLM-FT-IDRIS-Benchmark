@@ -1,0 +1,49 @@
+idr_torch is not installed, but its OK !! :)
+>>> Training on 4 processes
+world size:4, GBS:8, BSperDev:2, seq. length:4096, sAC ratio:3/4, grad accumulation:1, compile:True
+Time to load and initialize the model and its tokenizer: 3.852s
+Time to shard the model: 29.360s
+Time to transfer the model to GPU: 0.038s
+Time to instantiate torch.compile: 0.055s
+number of parameters: 14770033664
+Pre-loop Model MaxMemory for GPU:0 19.720529079437256 GBytes
+Time to load dataset and initialize dataloader: 215.102s
+global batch size: 8 - mini batch size: 2
+DATALOADER 4 True True True 3 False 
+Optimizer: AdamW (
+Parameter Group 0
+    amsgrad: False
+    betas: (0.9, 0.999)
+    capturable: False
+    decoupled_weight_decay: True
+    differentiable: False
+    eps: 1e-05
+    foreach: None
+    fused: None
+    lr: 1e-05
+    maximize: False
+    weight_decay: 0.1
+)
+Step 10 / 100 | Loss: 6.872 | Perplexity: 645342232576.000 | LR: 3.833e-09 | Wall: 39.538
+Step 20 / 100 | Loss: 6.869 | Perplexity: 1073801920512.000 | LR: 8.091e-09 | Wall: 22.989
+Step 30 / 100 | Loss: 7.198 | Perplexity: 1084668444672.000 | LR: 1.235e-08 | Wall: 23.006
+Step 40 / 100 | Loss: 6.930 | Perplexity: 1071600369664.000 | LR: 1.661e-08 | Wall: 495.768
+Step 50 / 100 | Loss: 6.981 | Perplexity: 1156278648832.000 | LR: 2.087e-08 | Wall: 23.014
+Step 60 / 100 | Loss: 6.953 | Perplexity: 1036297699328.000 | LR: 2.513e-08 | Wall: 23.014
+Step 70 / 100 | Loss: 6.800 | Perplexity: 815964815360.000 | LR: 2.938e-08 | Wall: 23.045
+Step 80 / 100 | Loss: 6.891 | Perplexity: 762138460160.000 | LR: 3.364e-08 | Wall: 22.983
+Step 90 / 100 | Loss: 6.877 | Perplexity: 824291426304.000 | LR: 3.790e-08 | Wall: 22.996
+Step 100 / 100 | Loss: 7.125 | Perplexity: 902374555648.000 | LR: 4.216e-08 | Wall: 22.979
+>>> Training complete in: 0:12:01.534520
+>>> Training performance time: min 2.2032222747802734 avg 7.067723832949244 seconds (+/- 47.2707833128553)
+>>> Forward performance time: min 0.6032333374023438 avg 5.446203422064733 seconds (+/- 0.0003618841065412985)
+>>> Backward performance time: min 1.5932769775390625 avg 1.6215174246316004 seconds (+/- 0.0003618841065412985)
+>>> Loading performance time: min 0.0002627372741699219 avg 0.0013317869167135219 seconds (+/- 0.0003618841065412985)
+>>> ########## BENCHMARKING #####################################
+(Measured on 100 steps) Step time Avg : 2.301997184753418 s
+Estimated Training Time (2 epochs bs 128) : 9.384475189844768 h
+MaxMemory for GPU:0 73.49381065368652 GBytes
+RANK: 0
+VmPeak:  302457356 kB  VmHWM:  8992384 kB
+NCCL version 2.27.3+cuda12.9
+Mon Nov 24 02:27:07 CET 2025

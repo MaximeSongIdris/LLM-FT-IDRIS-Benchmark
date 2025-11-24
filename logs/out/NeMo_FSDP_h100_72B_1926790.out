@@ -1,0 +1,141 @@
+world size: 64, GBS: 128, BSperDev: 1, grad accumulation:2, sequence length: 4096, grad_check: True,  attention: flash_attention_2, Liger-Kernels: True
+[NeMo I 2025-11-24 00:40:58 nemo_logging:393] Using passed HF dataset Dataset({
+        features: ['id', 'messages', 'source'],
+        num_rows: 939343
+    })
+[NeMo I 2025-11-24 00:41:00 nemo_logging:393] use_linear_ce_loss: True
+Using FSDP2 with DP=64, TP=1, CP=1
+[NeMo I 2025-11-24 00:41:00 nemo_logging:393] Using default TP plan for parallelization. It is compatible with huggingface llama3-style models.
+[NeMo I 2025-11-24 00:41:01 nemo_logging:393] Experiments will be logged at /lustre/fswork/projects/idris/sos/ssos040/Bench_InstructFT_Tulu3/InstructFT/nemo_experiments/default/2025-11-24_00-41-01
+NCCL version 2.27.3+cuda12.9
+[NeMo I 2025-11-24 00:47:12 nemo_logging:393] Configuring model with attn_implementation: flash_attention_2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Applied Liger kernels to Qwen2
+Pre-loop Model MaxMemory for GPU:0 6.756799221038818 GBytes
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Training: |          | 0/? [00:00<?, ?it/s]Training:   0%|          | 0/14678 [00:00<?, ?it/s]Epoch 0:   0%|          | 0/14678 [00:00<?, ?it/s] Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Mon Nov 24 00:57:56 CET 2025

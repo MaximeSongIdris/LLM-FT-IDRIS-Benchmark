@@ -1,0 +1,45 @@
+world size: 32, GBS: 64, BSperDev: 2, grad accumulation:1, sequence length: 4096, grad_check: True,  attention: flash_attention_2, Liger-Kernels: False
+[NeMo I 2025-11-24 18:25:12 nemo_logging:393] Using passed HF dataset Dataset({
+        features: ['id', 'messages', 'source'],
+        num_rows: 939343
+    })
+[NeMo I 2025-11-24 18:25:14 nemo_logging:393] use_linear_ce_loss: True
+Using FSDP2 with DP=32, TP=1, CP=1
+[NeMo I 2025-11-24 18:25:14 nemo_logging:393] Using default TP plan for parallelization. It is compatible with huggingface llama3-style models.
+[NeMo I 2025-11-24 18:25:15 nemo_logging:393] Experiments will be logged at /lustre/work/sos/ssos040/nemo_experiments/default/2025-11-24_18-25-15
+[NeMo I 2025-11-24 18:25:25 nemo_logging:393] Configuring model with attn_implementation: flash_attention_2
+NCCL version 2.27.3+cuda12.9
+Pre-loop Model MaxMemory for GPU:0 8.872766017913818 GBytes
+Training: |          | 0/? [00:00<?, ?it/s]Training:   0%|          | 0/14678 [00:00<?, ?it/s]Epoch 0:   0%|          | 0/14678 [00:00<?, ?it/s] Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Current pytorch-triton version: 3.3.0+git96316ce52.nvinternal, Required triton version: 3.2.0
+Epoch 0:   0%|          | 1/14678 [00:13<55:23:03,  0.07it/s]Epoch 0:   0%|          | 1/14678 [00:13<55:23:13,  0.07it/s, v_num=5-15, global_step=0.000, reduced_train_loss=29.80, tps=20783.0, lr=3e-6]Mon Nov 24 06:36:29 PM CET 2025
