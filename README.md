@@ -38,6 +38,7 @@ if args.sac:
     model.config.use_cache = False
     BlockCls = type(model.model.layers[0])
     apply_fsdp_checkpointing(model, BlockCls, args.sac)
+```
 
 
 ## Gradient Accumulation (Last-Resort Memory Relief)
