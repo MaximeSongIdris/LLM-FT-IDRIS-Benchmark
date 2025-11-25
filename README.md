@@ -26,17 +26,11 @@ Instead of storing all intermediate activations during the forward pass, PyTorch
 
 In our implementation, **selective activation checkpointing (sAC)** allows applying checkpointing only on a *fraction* of the Transformer blocks, giving fine-grained control over the trade-off between:
 - GPU memory usage  
-- Runtime overhead  
-- Numerical stability  
-- Interconnect pressure  
+- Runtime overhead   
 
-This approach is particularly effective for **dense models up to 72B**, trained with **FSDP2** on **H100 80GB GPUs**.
-
----
+The **runtime overhead introduced** by sAC depends directly on the selected ratio and typically ranges from 0% (no checkpointing) up to **~20%** under full activation checkpointing
 
 ## 🔧 Enabling Selective Activation Checkpointing
-
-The feature is toggled directly from the CLI:
 
 ```python
 ### Selective Activation Checkpointing
@@ -44,6 +38,48 @@ if args.sac:
     model.config.use_cache = False
     BlockCls = type(model.model.layers[0])
     apply_fsdp_checkpointing(model, BlockCls, args.sac)
+
+
+## Gradient Accumulation (Last-Resort Memory Relief)
+
+When GPU memory becomes fully saturated — even with **full activation checkpointing** enabled — the only remaining option is to reduce the per-GPU batch size and compensate using **gradient accumulation**. This technique splits a large batch into several micro-batches processed sequentially, accumulating gradients before applying an optimizer step. While it effectively lowers memory usage, its drawback is a **runtime penalty that is almost linear** in this context: using `grad_acc=2` nearly doubles the iteration time, and so on. Gradient accumulation should therefore be considered a **last-resort solution** when all other memory-optimization strategies have been exhausted.
+
+## ollate Function for Instruct Fine-Tuning
+
+In Instruct Fine-Tuning with dialogue-style datasets, the `collate_function` must correctly prepare inputs and labels for causal language modeling. Tokens that belong to the *non-assistant role part* (e.g., user or system messages) must be assigned the label **`-100`**, which lies outside the vocabulary range and is therefore ignored by the Cross-Entropy loss. Only the padding tokens are masked as well, ensuring that the model learns exclusively from the assistant’s response tokens.
+
+For benchmarking purposes, our pipeline pads (or truncates) **all sequences to a fixed `max_seq_length`**, ensuring a constant computational shape across training steps. In standard training practice, however, sequences are padded only up to the **maximum length within each batch** and truncated at `max_seq_length`, offering better memory and runtime efficiency.
+
+
+## FSDP2 with Mixed Precision (BF16)
+
+We rely on **PyTorch FSDP2** to shard model parameters and optimizer states across GPUs while using **mixed precision** to balance numerical stability and performance. In our setup, parameters are stored in `float32` in their sharded form, but exposed as `bfloat16` when unsharded for compute. This follows the design described in the ![official PyTorch FSDP2 tutorial.](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html)
+
+Below is a minimal example of how we configure **FSDP2 in BF16-mixed mode**:
+
+```python
+fsdp_kwargs = {
+    "mp_policy": MixedPrecisionPolicy(
+        param_dtype=torch.bfloat16,
+        reduce_dtype=torch.float32,
+    )
+}
+
+for layer in model.layers:
+    fully_shard(layer, **fsdp_kwargs)
+fully_shard(model, **fsdp_kwargs)
+
+# sharded parameters are float32
+for param in model.parameters():
+    assert param.dtype == torch.float32
+
+# unsharded parameters are bfloat16
+model.unshard()
+for param in model.parameters(recurse=False):
+    assert param.dtype == torch.bfloat16
+model.reshard()
+```
+
 
 
 
