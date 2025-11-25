@@ -125,7 +125,7 @@ tokenizer = AutoTokenizer.from_pretrained(str(model_path), padding_side="left")
 if RANK == 0: print(f"Time to load and initialize the model and its tokenizer: {chrono.tac_time():.3f}s")
 ####
 
-### Gradient Checkpointing
+### Selective Activation Checkpointing
 if args.sac:
     model.config.use_cache = False
     BlockCls = type(model.model.layers[0])
