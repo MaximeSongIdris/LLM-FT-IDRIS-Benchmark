@@ -25,10 +25,51 @@ This conclusion holds **only if GPUs provide ≥ 80 GB of memory** and the syste
 
 In this context, introducing **tensor parallelism** increases operational complexity without providing gains, and adding **pipeline parallelism** makes model handling significantly more complex (architecture restructuring, multi-shard weight loading). In contrast, **FSDP/FSDP2 shards parameters transparently**, making large-scale SFT feel almost seamless. However, FSDP alone becomes insufficient at **very large GPU counts** required for full pre-training or extreme-scale models, where richer parallelism strategies become mandatory.
 
-## SFT Benchmarking Results
+## 📊 Figure: SFT Benchmarking Across IDRIS GPU Clusters
 
 ![results](doc/images/SFTBench_results.png)
 
+The figure compares Supervised Fine-Tuning (SFT) throughput (in **Ktokens/s**) and total training time across three GPU partitions available at IDRIS:
+- **JZ-A100-OmniPath**
+- **JZ-H100-InfiniBand**
+- **DALIA-B200-NVLink**
+
+### 🔌 Impact of Interconnect Performance
+A strong dependency on the cluster interconnect is visible:
+- Moving from **A100-OmniPath** to **H100-InfiniBand** yields a **×10 improvement** in throughput, mainly due to OmniPath becoming the limiting factor in distributed training.
+- Going from **H100-InfiniBand** to **B200-NVLink** provides an additional **×2 speed-up**, thanks to full-node NVLink enabling much higher FSDP2 throughput.
+
+### PyTorch FSDP2 + sAC + `torch.compile`
+On **H100-InfiniBand** and **B200-NVLink**, our simple PyTorch pipeline (**FSDP2 + selective Activation Checkpointing + `torch.compile`**) delivers the best performance among all tested configurations.  
+These results highlight that:
+- selective AC reduces overhead compared to full AC  
+- `torch.compile` contributes a significant boost across all model sizes  
+- FSDP2 scales efficiently when the interconnect is not the bottleneck  
+
+### NeMo HFAutoModelForCausalLLM (TP + FSDP2)
+
+On the older **A100-OmniPath** partition, the best-performing configuration is the **Tensor Parallelism (TP) + FSDP2** setup from NeMo. In this scenario, a **2D parallelism strategy** is employed across the 64 GPUs:  
+- **Tensor Parallelism** spans *all GPUs inside each node* (TP size = 4 or 8 depending on the hardware),  
+- while **FSDP2** shards *across nodes*, with an effective FSDP group size of **16 or 8 GPUs**.
+
+This hybrid layout is better suited to a **low-bandwidth interconnect** like OmniPath, since TP keeps most communication *intra-node* (high throughput), while FSDP only synchronizes across a smaller cross-node group. This makes the approach more efficient for very large models and helps compensate for the inter-node bottleneck where FSDP alone would be critical.
+
+### ◻Hollow Bars — Cross-Checking the Two Baseline Configurations
+
+The **hollow bars** are included to validate the comparison between the two **solid-bar configurations**, which represent distinct training strategies. These hollow bars correspond to simplified or baseline versions of each approach and should therefore appear **nearly equivalent**:
+
+- The **orange hollow bar** represents **PyTorch FSDP2 + selective AC (sAC) without `torch.compile`**.  
+- The **green hollow bar** represents **NeMo HFAutoModelForCausalLLM with full FSDP2 (no TP) + Full Activation Checkpointing + Liger Kernels**.
+
+The small difference between the two baselines is explained primarily by:
+- the absence of **selective** activation checkpointing on the NeMo baseline (NeMo only enables **full AC**),  
+- and the potential impact of **Liger Kernels** on memory layout and compute behavior.
+
+**GPU Memory Usage Notes** : The NeMo baseline (green hollow bar) generally shows **higher GPU memory usage** than the PyTorch baseline (orange hollow bar).
+
+Despite these discrepancies, the two hollow baselines are close enough to serve as useful reference points for interpreting the differences shown by the corresponding solid-bar configurations.
+
+### Notes
 **Training time estimation:** we measured the **average iteration duration over 100 steps** (excluding the first) and multiplied this value by the total number of training steps.  
 **Important:** the hyperparameters shown in the code **must not be considered as reference**, because the **gradient descent was not tuned or monitored** — this was a **benchmark-only setup**, not an optimized training run.
 
