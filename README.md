@@ -32,6 +32,49 @@ In this context, introducing **tensor parallelism** increases operational comple
 **Training time estimation:** we measured the **average iteration duration over 100 steps** (excluding the first) and multiplied this value by the total number of training steps.  
 **Important:** the hyperparameters shown in the code **must not be considered as reference**, because the **gradient descent was not tuned or monitored** — this was a **benchmark-only setup**, not an optimized training run.
 
+## Containers vs. Modules — Practical Observations
+
+For portability and reproducibility across heterogeneous systems, we chose to rely on an NGC container image (`nemo-25.09`) rather than environment modules. In practice, the container setup proved **significantly more performant** than the `module` environment for this heavily distributed workload, particularly due to more consistent CUDA/NCCL integration.
+
+However, containers can also hide networking issues. We strongly recommend enabling NCCL diagnostics using  
+`NCCL_DEBUG=WARN`, as we observed cases where the interconnect failed to detect its intended interfaces and silently fell back to a **degraded communication mode**. Monitoring these warnings is essential to ensure that distributed performance remains optimal.
+
+
+## 🔁 Reproducing the Experiments
+
+To reproduce our benchmarks, follow the steps below:
+
+### 1. Adjust local paths
+Modify the paths in the training scripts (`./*.py`) so that:
+- model checkpoints,
+- dataset locations,
+- logging directories,
+- and output folders  
+match your local filesystem or shared cluster environment.
+
+### 2. Configure your SLURM environment
+If you are running on a SLURM-managed cluster, adapt the provided SLURM job files inside `slurm/`:
+- account/project name  
+- partition or QoS  
+- number of nodes / GPUs per node  
+- container or module settings  
+- job duration and output folders  
+
+### 3. Launch the experiments
+Once the SLURM scripts are adjusted, you can run the experiments directly:
+
+```bash
+sbatch slurm/FSDP_sAC_h100_72B.slurm
+sbatch slurm/DALIA_NeMo_FSDP_TP_32B.slurm
+
+```
+
+## Poster
+![poster](doc/images/Posterv1.png)
+
+----
+# Code review
+
 ## Selective Activation Checkpointing (sAC)
 
 Activation checkpointing is essential to reduce the memory footprint during LLM training.  
@@ -198,44 +241,6 @@ In FSDP2, **optimizer states are sharded across GPUs**, just like model paramete
 The Distributed Checkpoint (DCP) APIs make it possible to save and reload these sharded optimizer states efficiently, without requiring full consolidation on a single machine.
 Refer to [pytorch/examples](https://github.com/pytorch/examples/blob/main/distributed/FSDP2/checkpoint.py) for loading and saving optimizer state dicts with `set_optimizer_state_dict` and `get_optimizer_state_dict`.
 
-## Containers vs. Modules — Practical Observations
 
-For portability and reproducibility across heterogeneous systems, we chose to rely on an NGC container image (`nemo-25.09`) rather than environment modules. In practice, the container setup proved **significantly more performant** than the `module` environment for this heavily distributed workload, particularly due to more consistent CUDA/NCCL integration.
-
-However, containers can also hide networking issues. We strongly recommend enabling NCCL diagnostics using  
-`NCCL_DEBUG=WARN`, as we observed cases where the interconnect failed to detect its intended interfaces and silently fell back to a **degraded communication mode**. Monitoring these warnings is essential to ensure that distributed performance remains optimal.
-
-
-## 🔁 Reproducing the Experiments
-
-To reproduce our benchmarks, follow the steps below:
-
-### 1. Adjust local paths
-Modify the paths in the training scripts (`./*.py`) so that:
-- model checkpoints,
-- dataset locations,
-- logging directories,
-- and output folders  
-match your local filesystem or shared cluster environment.
-
-### 2. Configure your SLURM environment
-If you are running on a SLURM-managed cluster, adapt the provided SLURM job files inside `slurm/`:
-- account/project name  
-- partition or QoS  
-- number of nodes / GPUs per node  
-- container or module settings  
-- job duration and output folders  
-
-### 3. Launch the experiments
-Once the SLURM scripts are adjusted, you can run the experiments directly:
-
-```bash
-sbatch slurm/FSDP_sAC_h100_72B.slurm
-sbatch slurm/DALIA_NeMo_FSDP_TP_32B.slurm
-
-```
-
-## Poster
-![poster](doc/images/Posterv1.png)
 
 
