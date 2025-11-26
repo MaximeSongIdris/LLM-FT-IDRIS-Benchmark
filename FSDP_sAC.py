@@ -8,6 +8,7 @@ import torch.distributed as dist
 from argparse import ArgumentParser, Namespace, BooleanOptionalAction
 from pathlib import Path
 from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
 from torch.nn import CrossEntropyLoss
 from torch.nn.parallel import DistributedDataParallel
 from torch.optim import AdamW
@@ -293,15 +294,15 @@ for epoch in range(args.epochs):
     if not args.test:
         ckeckpoint_name =  f"model_state_dict_{os.environ['SLURM_JOB_ID']}_epoch{epoch}.pt"
         print(f"Model Checkpointing - Building the {ckeckpoint_name} file")
-        sharded_sd = model.state_dict()
-        cpu_state_dict = {}
-        for param_name, sharded_param in sharded_sd.items():
-            full_param = sharded_param.full_tensor()
-            if torch.distributed.get_rank() == 0:
-                cpu_state_dict[param_name] = full_param.cpu()
-            else:
-                del full_param
-        torch.save(cpu_state_dict, ckeckpoint_name)
+        model_state_dict = get_model_state_dict(
+            model=model,
+            options=StateDictOptions(
+                full_state_dict=True,
+                cpu_offload=True,
+            )
+        )
+        torch.save(model_state_dict, ckeckpoint_name)
+
 
 
     ###############################
