@@ -241,6 +241,11 @@ In FSDP2, **optimizer states are sharded across GPUs**, just like model paramete
 The Distributed Checkpoint (DCP) APIs make it possible to save and reload these sharded optimizer states efficiently, without requiring full consolidation on a single machine.
 Refer to [pytorch/examples](https://github.com/pytorch/examples/blob/main/distributed/FSDP2/checkpoint.py) for loading and saving optimizer state dicts with `set_optimizer_state_dict` and `get_optimizer_state_dict`.
 
+## 📎 Attribution
+
+This work is openly available to the community.  
+If you reuse our scripts, methodology, or benchmark results, please cite or acknowledge this project.  
+It supports open, transparent, and reproducible LLM research on HPC infrastructures.
 
 
 
