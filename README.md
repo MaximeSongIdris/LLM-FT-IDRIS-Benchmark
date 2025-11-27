@@ -14,6 +14,8 @@ Based on our measurements, a **3,000 H100 GPU-hour allocation** is sufficient to
 
 Future work will extend this democratization to **Mixture-of-Experts training** (expert parallelism), **large-context models** (context parallelism), and more advanced stages such as **pre-training** and **post-training with RL**, while tracking progress in **TorchTitan** and **NeMo AutoModel**.
 
+Our realistic Instruct Fine-Tuning scenario follows the setup described in [Tulu 3: Pushing Frontiers in Open Language Model Post-Training (2024)](https://arxiv.org/abs/2411.15124).
+
 ---
 
 ## ✅ Conclusion
