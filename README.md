@@ -34,7 +34,7 @@ The figure compares Supervised Fine-Tuning (SFT) throughput (in **Ktokens/s**) a
 - **JZ-H100-InfiniBand**
 - **DALIA-B200-NVLink**
 
-### 🔌 Impact of Interconnect Performance
+### Impact of Interconnect Performance
 A strong dependency on the cluster interconnect is visible:
 - Moving from **A100-OmniPath** to **H100-InfiniBand** yields a **×10 improvement** in throughput, mainly due to OmniPath becoming the limiting factor in distributed training.
 - Going from **H100-InfiniBand** to **B200-NVLink** provides an additional **×2 speed-up**, thanks to full-node NVLink enabling much higher FSDP2 throughput.
@@ -54,7 +54,7 @@ On the older **A100-OmniPath** partition, the best-performing configuration is t
 
 This hybrid layout is better suited to a **low-bandwidth interconnect** like OmniPath, since TP keeps most communication *intra-node* (high throughput), while FSDP only synchronizes across a smaller cross-node group. This makes the approach more efficient for very large models and helps compensate for the inter-node bottleneck where FSDP alone would be critical.
 
-### ◻Hollow Bars — Cross-Checking the Two Baseline Configurations
+### Hollow Bars — Cross-Checking the Two Baseline Configurations
 
 The **hollow bars** are included to validate the comparison between the two **solid-bar configurations**, which represent distinct training strategies. These hollow bars correspond to simplified or baseline versions of each approach and should therefore appear **nearly equivalent**:
 
