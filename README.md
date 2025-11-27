@@ -91,9 +91,7 @@ To reproduce our benchmarks, follow the steps below:
 Modify the paths in the training scripts (`./*.py`) so that:
 - model checkpoints,
 - dataset locations,
-- logging directories,
-- and output folders  
-match your local filesystem or shared cluster environment.
+- and output (logging, checkpoints) folders match your local filesystem or shared cluster environment.
 
 ### 2. Configure your SLURM environment
 If you are running on a SLURM-managed cluster, adapt the provided SLURM job files inside `slurm/`:
