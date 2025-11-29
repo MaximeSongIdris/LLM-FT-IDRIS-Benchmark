@@ -27,13 +27,17 @@ from utils import (
 )
 
 # Distribution Variables
-RANK = int(os.environ['RANK'])
-LOCAL_RANK = int(os.environ['LOCAL_RANK'])
-WORLD_SIZE = int(os.environ['WORLD_SIZE'])
+RANK = int(os.environ['SLURM_PROCID'])
+LOCAL_RANK = int(os.environ['SLURM_LOCALID'])
+WORLD_SIZE = int(os.environ['SLURM_NTASKS'])
+## Don't forget to export in slurm file 
+#export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n1)
+#export MASTER_PORT=29500
 
 
 if RANK == 0:
     print(f">>> Training on {WORLD_SIZE} processes")
+    print(f"MASTER_ADDR: {os.environ['MASTER_ADDR']} MASTER_PORT: {os.environ['MASTER_PORT']}")
 
 def parse_args() -> Namespace:
     parser = ArgumentParser()
@@ -90,6 +94,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dist.init_process_group(
     init_method="env://", #Default value
     backend="nccl",
+    rank=RANK,
+    world_size=WORLD_SIZE,
 )
 
 gbs=args.batch_size*args.grad_acc*WORLD_SIZE
