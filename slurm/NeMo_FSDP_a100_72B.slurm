@@ -27,9 +27,6 @@ export SINGULARITY_BINDPATH="$WORK,$ALL_CCFRWORK,$DSDIR,$SCRATCH,$ALL_CCFRSCRATC
 ## Distribution setup
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n1)
 export MASTER_PORT=29500
-export WORLD_SIZE=$SLURM_NTASKS
-export RANK=$SLURM_PROCID
-export LOCAL_RANK=$SLURM_LOCALID
 
 # detect the IB trouble
 export NCCL_DEBUG=WARN
