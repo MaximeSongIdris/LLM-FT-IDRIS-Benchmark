@@ -38,7 +38,7 @@ if RANK == 0:
 def parse_args() -> Namespace:
     parser = ArgumentParser()
 
-    # Memory related arguments
+    # Training related arguments
     parser.add_argument('--bsz', "--batch-size", dest="batch_size", default=1, type=int, help='batch size per GPU')
     parser.add_argument('--seq-len', "--seq-length", dest="seq_length", default=4096, type=int, help='sequence length of each sample per GPU')
     parser.add_argument('--grad-acc', default=1, type=int, help='Gradient Accumulation count')
@@ -61,7 +61,7 @@ def parse_args() -> Namespace:
     parser.add_argument('--prefetch-factor', default=3, type=int, help='prefectch factor in dataloader')
     parser.add_argument('--drop-last', default=False, action=BooleanOptionalAction, help='activate drop_last option in dataloader')
 
-    # Training related arguments
+    # Optimizer AdamW related arguments
     parser.add_argument("--lr-warmup-ratio", default=0.1, type=float, help="linear warmup of learning rate before cosine annealing")
     parser.add_argument("--lr", "--learning-rate", dest="learning_rate", type=float, default=1e-5, help="learning rate for adamw")
     parser.add_argument("--wd", "--weight-decay", dest="weight_decay", type=float, default=0.1, help="weight decay for adamw")
@@ -73,7 +73,8 @@ def parse_args() -> Namespace:
                         default=None,
                         type=str,
                         help='For a given ac ratio p, we should essentially apply ac on every "1/p" blocks.')
-    
+    parser.add_argument('--low-cpu-ram', default=False, action='store_true', help='Economy mode for CPU RAM - casting is done during the sharding.')
+
     return parser.parse_args()
 
 
@@ -111,7 +112,10 @@ dataset_path = "/lustre/fswork/dataset/tulu-3-sft-mixture/data"
 
 #### Initialize the model and its tokenizer
 if RANK == 0: chrono.tac_time(clear=True)
-model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="bfloat16")
+if args.low_cpu_ram:
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="bfloat16")
+else:
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="float32")
 num_parameters = sum(param.numel() for param in model.parameters())
 tokenizer = AutoTokenizer.from_pretrained(str(model_path), padding_side="left")
 if RANK == 0: print(f"Time to load and initialize the model and its tokenizer: {chrono.tac_time():.3f}s")
@@ -132,9 +136,15 @@ fsdp_kwargs["mp_policy"] = MixedPrecisionPolicy(
             reduce_dtype=torch.float32,
         )
 
-for layer in model.model.layers:
-    fully_shard(layer.type(torch.float32), **fsdp_kwargs)
-fully_shard(model.type(torch.float32), **fsdp_kwargs)
+if args.low_cpu_ram:
+    for layer in model.model.layers:
+        fully_shard(layer.type(torch.float32), **fsdp_kwargs)
+    fully_shard(model.type(torch.float32), **fsdp_kwargs)
+
+else:
+    for layer in model.model.layers:
+        fully_shard(layer, **fsdp_kwargs)
+    fully_shard(model, **fsdp_kwargs)
 
 if RANK == 0: print(f"Time to shard the model: {chrono.tac_time():.3f}s")
 

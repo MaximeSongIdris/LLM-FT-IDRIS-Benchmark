@@ -25,13 +25,12 @@ export LOCAL_RANK=$SLURM_LOCALID
 export NCCL_DEBUG=WARN
 
 export APPTAINER_BINDPATH="$WORK,$ALL_WORK"
-export MYPATH=/lustre/work/sos/commun/BC/LLMSFTComBenchmarking/InstructFT
 
 ## launch script on every task 
 set -x
 time srun apptainer exec --nv \
     $WORK/nemo2506_arm.sif \
-    python $MYPATH/nemo_TPFSDP2.py --model Qwen/Qwen2.5-14B-Instruct \
+    python $MYWORK/nemo_TPFSDP2.py --model Qwen/Qwen2.5-14B-Instruct \
                              --use-te-optimizer \
                              --strategy fsdp2 \
                              --devices 4 \

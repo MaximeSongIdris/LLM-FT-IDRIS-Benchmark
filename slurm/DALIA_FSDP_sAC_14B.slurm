@@ -26,7 +26,6 @@ export LOCAL_RANK=$SLURM_LOCALID
 export NCCL_DEBUG=WARN
 
 export APPTAINER_BINDPATH="$WORK,$ALL_WORK"
-export MYPATH=/lustre/work/sos/commun/BC/LLMSFTComBenchmarking/InstructFT
 
 ulimit -s 8192
 
@@ -35,5 +34,5 @@ ulimit -s 8192
 set -x
 time srun apptainer exec --nv \
     $WORK/nemo2506_arm.sif \
-    python $MYPATH/FSDP_sAC.py --test --model Qwen/Qwen2.5-14B-Instruct --sac 0 --bsz 2 --grad-acc 1 --compile
+    python $MYWORK/FSDP_sAC.py --test --model Qwen/Qwen2.5-14B-Instruct --sac 0 --bsz 2 --grad-acc 1 --cpu-usage --compile
 date
