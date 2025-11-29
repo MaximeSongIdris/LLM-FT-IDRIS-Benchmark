@@ -82,6 +82,17 @@ For portability and reproducibility across heterogeneous systems, we chose to re
 
 However, containers can also hide networking issues. We strongly recommend enabling NCCL diagnostics using `NCCL_DEBUG=WARN`, as we observed cases where the interconnect failed to detect its intended interfaces and silently fell back to a **degraded communication mode**. Monitoring these warnings is essential to ensure that distributed performance remains optimal.
 
+## ⚡ Improved Efficiency with 32 GPUs on DALIA (GB200-NVL72)
+
+Thanks to the **GB200-NVL72 nodes** on DALIA — each offering **192 GB of GPU RAM** — it becomes possible to run all three models (14B, 32B, 72B) on **only 32 GPUs** using the full PyTorch pipeline (FSDP2 + selective activation checkpointing + `torch.compile`).  
+With a **per-GPU batch size of 4**, we reach a **global batch size (GBS) of 128**.
+
+Under these conditions, the total GPU-hours improve significantly for the 14B model :
+
+- **Qwen-14B:** 4.64 h → **148.48 GPU-hours** (vs. 234.88 GPU-hours)  
+- **Qwen-32B:** 13.43 h → **429.76 GPU-hours** (vs. 469.12 GPU-hours)  
+- **Qwen-72B:** 35.27 h → **1128.6 GPU-hours** (vs. 1142.4 GPU-hours)  
+
 
 ## 🔁 Reproducing the Experiments
 
