@@ -42,6 +42,7 @@ All evaluations in this study were conducted on **64 GPUs**, with a **global bat
 The only hyperparameters that were tuned are:
 
 - For Full pytorch solution, **the selective activation checkpointing ratio**, adjusted according to the available GPU memory
+
 |    sAC ratio    | A100-80GB | H100-80GB | GB200-186GB |
 |-----------------|-----------|-----------|-------------|
 |  Qwen2.5-14B    | 1/2       | 1/2       | 0           |
