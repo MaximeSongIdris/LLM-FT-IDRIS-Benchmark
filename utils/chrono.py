@@ -1,86 +1,114 @@
 from datetime import datetime
 from time import time
 import numpy as np
-import json
-
-###############################
-# Author : Bertrand CABOT from IDRIS(CNRS)
-#
-# #######################
 
 
-class Chronometer:
-    def __init__(self, rank=0, grad_acc=1):
-        self.rank = rank
-        self.grad_acc = grad_acc
-        self.time_perf_train = []
-        self.time_perf_load = []
+class TrainingChronometer:
+    def __init__(self) -> None:
+        self._reset_state()
+
+    def reset(self) -> None:
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        self.training_duration = None
+        self.time_perf_dataloading = []
         self.time_perf_forward = []
         self.time_perf_backward = []
-        self.power = []
-        self.start_proc = None
-        self.start_training = None
-        self.start_dataload = None
-        self.start_backward = None
-        self.start_forward = None
-        self.time_point = None
         
+        self.saved_time = None
+        self.start_training_time = None
+        self.start_dataloading_time = None
+        self.start_forward_time = None
+        self.start_backward_time = None
     
-    def tac_time(self, clear=False):
-        if self.time_point == None or clear:
-            self.time_point = time()
-            return
+    def timer(self, start: bool=True) -> None | float:
+        """Start or stop a simple wall-clock timer.
+
+        When `start` is True, records the current time as the reference.
+        When `start` is False, returns the elapsed time since the last reference
+        and updates the reference to the current time.
+        """
+        if start:
+            self.saved_time = time()
         else:
-            new_time = time() - self.time_point
-            self.time_point = time()
-            return new_time
-    
-    def clear(self):
-        self.time_perf_train = []
-        self.time_perf_load = []
-        self.time_perf_forward = []
-        self.time_perf_backward = []
+            if self.saved_time is None:
+                raise RuntimeError("Timer was not started. Call timer(start=True) first.")
+            else:
+                previous_time = self.saved_time
+                self.saved_time = time()
+                return self.saved_time - previous_time
         
-    def start(self):
-        if self.rank == 0: self.start_proc = datetime.now()
+    def track_training_time(self, start: bool=True) -> None | float:
+        """Start or stop a wall-clock training timer."""
+        if start:
+            self.start_training_time = datetime.now()
+        else:
+            if self.start_training_time is None:
+                raise RuntimeError("Training timer was not started. Call track_training_time(start=True) first.")
+            else:
+                self.training_duration = datetime.now() - self.start_training_time
+                self.start_training_time = None
             
-    def dataload(self):
-        if self.rank == 0:
-            if self.start_dataload==None: self.start_dataload = time()
+    def track_dataloading_step_time(self, start: bool=True) -> None | float:
+        """Start or stop a wall-clock data loading timer."""
+        if start:
+            self.start_dataloading_time = time()
+        else:
+            if self.start_dataloading_time is None:
+                raise RuntimeError("Dataloading timer was not started. Call track_dataloading_step_time(start=True) first.")
             else:
-                self.time_perf_load.append(time() - self.start_dataload)
-                self.start_dataload = None
+                self.time_perf_dataloading.append(time() - self.start_dataloading_time)
+                self.start_dataloading_time = None
                 
-    def training(self):
-        if self.rank == 0:
-            if self.start_training==None: self.start_training = time()
+    def track_forward_step_time(self, start: bool=True) -> None | float:
+        """Start or stop a wall-clock forward pass timer."""
+        if start:
+            self.start_forward_time = time()
+        else:
+            if self.start_forward_time is None:
+                raise RuntimeError("Forward timer was not started. Call track_forward_step_time(start=True) first.")
             else:
-                self.time_perf_train.append(time() - self.start_training)
-                self.start_training = None
+                self.time_perf_forward.append(time() - self.start_forward_time)
+                self.start_forward_time = None
                 
-    def forward(self):
-        if self.rank == 0:
-            if self.start_forward==None: self.start_forward = time()
-            else:
-                self.time_perf_forward.append(time() - self.start_forward)
-                self.start_forward = None
+    def track_backward_step_time(self, start: bool=True) -> None | float:
+        """Start or stop a wall-clock backward pass timer."""
+        if start:
+            self.start_backward_time = time()
+        else:
+            if self.start_backward_time is None:
+                raise RuntimeError("Backward timer was not started. Call track_backward_step_time(start=True) first.")
+            else:                
+                self.time_perf_backward.append(time() - self.start_backward_time)
+                self.start_backward_time = None
+
+    def print_percentile_summary(self, data: list, name: str) -> None:
+        """Helper function to display sample statistics.
+        
+        Shows the variability in the actual measurements using percentiles.
+        """
+        if len(data) >= 10:
+            # Use percentiles since it works for any distribution
+            p0 = np.min(data)
+            p10 = np.percentile(data, 10)
+            p50 = np.median(data)
+            p90 = np.percentile(data, 90)
+            p100 = np.max(data)
+
+            print(f">>> {name}: min {p0:.1f} s | 10th percentile {p10:.1f} s | median {p50:.1f} s | 90th percentile {p90:.1f} s | max {p100:.1f} s")
+        else:
+            print(f">>> {name}: insufficient data (n={len(data)})")
                 
-    def backward(self):
-        if self.rank == 0:
-            if self.start_backward==None: self.start_backward = time()
-            else:
-                self.time_perf_backward.append(time() - self.start_backward)
-                self.start_backward = None
-                
-                
-    def display(self):
-        if self.rank == 0:
-            print(">>> Training complete in: " + str(datetime.now() - self.start_proc))
-            print(">>> Training performance time: min {} avg {} seconds (+/- {})".format(np.min(self.time_perf_train[1:]), np.mean(self.time_perf_train[1:]), np.std(self.time_perf_train[1:])))
-            print(">>> Forward performance time: min {} avg {} seconds (+/- {})".format(np.min(self.time_perf_forward[1:]), np.mean(self.time_perf_forward[1:]), np.std(self.time_perf_load[1:])))
-            print(">>> Backward performance time: min {} avg {} seconds (+/- {})".format(np.min(self.time_perf_backward[1:]), np.mean(self.time_perf_backward[1:]), np.std(self.time_perf_load[1:])))
-            print(">>> Loading performance time: min {} avg {} seconds (+/- {})".format(np.min(self.time_perf_load[1:]), np.mean(self.time_perf_load[1:]), np.std(self.time_perf_load[1:])))
-            print(">>> ########## BENCHMARKING #####################################")
-            print(f'(Measured on 100 steps) Step time Avg : {np.median(self.time_perf_train[1:]) * self.grad_acc} s')
-            print(f'Estimated Training Time (2 epochs bs 128) : {np.median(self.time_perf_train[1:]) * self.grad_acc * 14676 / 3600} h')
-                
+    def display_training_results(self, bs: int, total_batches: int, grad_acc: int) -> None:
+        # Sample statistics
+        print(">>> Training complete in: " + str(self.training_duration))
+        print_percentile_summary(self.time_perf_dataloading[1:], "Data loading performance time")
+        print_percentile_summary(self.time_perf_forward[1:], "Forward pass performance time")
+        print_percentile_summary(self.time_perf_backward[1:], "Backward pass performance time")
+
+        # Total training time estimation
+        time_perf_train = [x + y + z for (x,y,z) in zip(self.time_perf_dataloading, self.time_perf_forward, self.time_perf_backward)]
+        print_percentile_summary(self.time_perf_train[1:], "Step performance time")
+        print(f'>>> Number of weight updates: {(total_batches + grad_acc - 1) // grad_acc}')
+        print(f'>>> Estimated training time of 1 epoch (bs={bs}): {np.median(self.time_perf_train[1:]) * total_batches / 3600} h')
