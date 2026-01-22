@@ -1,5 +1,5 @@
-# Democratizing-LLM-FT  
-### Scalable SFT Workflows Across IDRIS Computing Clusters
+# Democratizing-LLM-FT
+
 ---
 
 ## 🚀 Practical Large-Scale LLM Fine-Tuning on IDRIS Clusters
@@ -33,6 +33,7 @@ In this specific scenario — **dense SFT on 64 GPUs**, using pretrained weights
 
 Similarly, **TorchTitan** is rapidly gaining relevance and deserves dedicated analysis in future work. Our focus on PyTorch+Transformers in this report reflects the narrow scope of this benchmark, not a general preference in all contexts.
 
+
 ## 📊 Figure: SFT Benchmarking Across IDRIS GPU Clusters
 
 ![results](doc/images/SFTBench_results.png)
@@ -56,6 +57,7 @@ The tensor parallelism dimension is set to **TP=4** on the H100 and DALIA/GB200 
 
 
 ### Impact of Interconnect Performance
+
 A strong dependency on the cluster interconnect is visible:
 - Moving from **A100-OmniPath** to **H100-InfiniBand** yields a **×10 improvement** in throughput, mainly due to OmniPath becoming the limiting factor in distributed training.
 - Going from **H100-InfiniBand** to **B200-NVLink** provides an additional **×2 speed-up**, thanks to full-node NVLink enabling much higher FSDP2 throughput.
@@ -67,6 +69,7 @@ These results highlight that:
 - `torch.compile` contributes a significant boost across all model sizes  
 - FSDP2 scales efficiently when the interconnect is not the bottleneck  
 
+
 ### NeMo HFAutoModelForCausalLLM (TP + FSDP2)
 
 On the older **A100-OmniPath** partition, the best-performing configuration is the **Tensor Parallelism (TP) + FSDP2** setup from NeMo. In this scenario, a **2D parallelism strategy** is employed across the 64 GPUs:  
@@ -74,6 +77,7 @@ On the older **A100-OmniPath** partition, the best-performing configuration is t
 - while **FSDP2** shards *across nodes*, with an effective FSDP group size of **16 or 8 GPUs**.
 
 This hybrid layout is better suited to a **low-bandwidth interconnect** like OmniPath, since TP keeps most communication *intra-node* (high throughput), while FSDP only synchronizes across a smaller cross-node group. This makes the approach more efficient for very large models and helps compensate for the inter-node bottleneck where FSDP alone would be critical.
+
 
 ### Hollow Bars — Cross-Checking the Two Baseline Configurations
 
@@ -90,15 +94,19 @@ The small difference between the two baselines is explained primarily by:
 
 Despite these discrepancies, the two hollow baselines are close enough to serve as useful reference points for interpreting the differences shown by the corresponding solid-bar configurations.
 
+
 ### Notes
+
 **Training time estimation:** we measured the **average iteration duration over 100 steps** (excluding the first) and multiplied this value by the total number of training steps.  
 **Important:** the hyperparameters shown in the code **must not be considered as reference**, because the **gradient descent was not tuned or monitored** — this was a **benchmark-only setup**, not an optimized training run.
+
 
 ## Containers vs. Modules — Practical Observations
 
 For portability and reproducibility across heterogeneous systems, we chose to rely on an NGC container image (`nemo-25.09`) rather than `module` or virtual/conda environments. In practice, the container setup proved **significantly more performant** than the `module` environment for this heavily distributed workload, particularly due to more consistent CUDA/NCCL integration.
 
 However, containers can also hide networking issues. We strongly recommend enabling NCCL diagnostics using `NCCL_DEBUG=WARN`, as we observed cases where the interconnect failed to detect its intended interfaces and silently fell back to a **degraded communication mode**. Monitoring these warnings is essential to ensure that distributed performance remains optimal.
+
 
 ## ⚡ Improved Efficiency with 32 GPUs on DALIA (GB200-NVL72)
 
@@ -147,9 +155,7 @@ sbatch slurm/DALIA_NeMo_FSDP_TP_32B.slurm
 
 ## 📎 Attribution
 
-This work is openly available to the community.  
+This work is inspired on the methodology described in [Maximizing Training Efficiency](https://pytorch.org/blog/maximizing-training/) from the PyTorch Blog.  
+It is openly available to the community.  
 If you reuse our scripts, methodology, or benchmark results, please cite or acknowledge this project.  
 It supports open, transparent, and reproducible LLM research on HPC infrastructures.
-
-
-

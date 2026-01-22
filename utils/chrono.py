@@ -103,12 +103,12 @@ class TrainingChronometer:
     def display_training_results(self, bs: int, total_batches: int, grad_acc: int) -> None:
         # Sample statistics
         print(">>> Training complete in: " + str(self.training_duration))
-        print_percentile_summary(self.time_perf_dataloading[1:], "Data loading performance time")
-        print_percentile_summary(self.time_perf_forward[1:], "Forward pass performance time")
-        print_percentile_summary(self.time_perf_backward[1:], "Backward pass performance time")
+        self.print_percentile_summary(self.time_perf_dataloading[1:], "Data loading performance time")
+        self.print_percentile_summary(self.time_perf_forward[1:], "Forward pass performance time")
+        self.print_percentile_summary(self.time_perf_backward[1:], "Backward pass performance time")
 
         # Total training time estimation
         time_perf_train = [x + y + z for (x,y,z) in zip(self.time_perf_dataloading, self.time_perf_forward, self.time_perf_backward)]
-        print_percentile_summary(self.time_perf_train[1:], "Step performance time")
+        self.print_percentile_summary(self.time_perf_train[1:], "Step performance time")
         print(f'>>> Number of weight updates: {(total_batches + grad_acc - 1) // grad_acc}')
         print(f'>>> Estimated training time of 1 epoch (bs={bs}): {np.median(self.time_perf_train[1:]) * total_batches / 3600} h')
