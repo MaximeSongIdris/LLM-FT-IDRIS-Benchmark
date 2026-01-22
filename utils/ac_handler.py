@@ -1,3 +1,7 @@
+"""
+Source code: https://github.com/foundation-model-stack/fms-fsdp/blob/main/fms_fsdp/policies/ac_handler.py
+"""
+
 from functools import partial
 
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
@@ -10,8 +14,8 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 non_reentrant_wrapper = partial(
     checkpoint_wrapper,
     checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-    preserve_rng_state=False,
-    distribute_saved_activations=True
+    preserve_rng_state=False,  # no random output when forward of the same input
+    #distribute_saved_activations=True  # no clue if it is useful or not
 )
 
 
