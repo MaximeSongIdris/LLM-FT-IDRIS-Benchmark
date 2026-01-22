@@ -1,4 +1,5 @@
-"""
+"""Selective activation checkpointing, compatible with FSDP
+
 Source code: https://github.com/foundation-model-stack/fms-fsdp/blob/main/fms_fsdp/policies/ac_handler.py
 """
 

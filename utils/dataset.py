@@ -1,11 +1,20 @@
-from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Tuple
+
 from transformers import PreTrainedTokenizer
 import torch
 
-def sft_tulu_tokenize_and_truncate(row: Dict[str, Any], tokenizer: PreTrainedTokenizer, max_seq_length: int):
-    """taken directly from https://github.com/allenai/open-instruct/blob/ba11286e5b9eb00d4ce5b40ef4cac1389888416a/open_instruct/finetune.py#L385"""
-    
+
+def sft_tulu_tokenize_and_truncate(
+    row: Dict[str, Any], tokenizer: PreTrainedTokenizer, max_seq_length: int
+) -> Tuple[List[int], List[int], List[int]]:
+    """Prepare a conversation for Supervised Fine-Tuning (SFT).
+
+    This function processes a conversation by tokenizing all messages and creating labels
+    where only assistant responses contribute to the training loss. Non-assistant messages
+    (user, system) are masked with -100 in the labels tensor.
+
+    Adapted from: https://github.com/allenai/open-instruct/blob/ba11286e5b9eb00d4ce5b40ef4cac1389888416a/open_instruct/finetune.py#L385
+    """
     messages = row["messages"]
     if len(messages) == 0:
         raise ValueError("messages field is empty.")
@@ -66,32 +75,39 @@ def sft_tulu_tokenize_and_truncate(row: Dict[str, Any], tokenizer: PreTrainedTok
             if max_seq_length and message_end_idx >= max_seq_length:
                 break
     attention_mask = torch.ones_like(input_ids)
-    
     return input_ids.flatten().tolist(), labels.flatten().tolist(), attention_mask.flatten().tolist()
 
+def make_sft_collate(
+    tokenizer: PreTrainedTokenizer, max_seq_length: int, label_pad_token_id: int = -100
+) -> Callable[[List[Dict[str, Any]]], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Create a collate function for SFT DataLoader.
 
+    Returns a collate function that tokenizes, left-pads, and shifts sequences
+    for causal language modeling. The returned tensors are ready for training:
+    - input_ids are shifted left (excludes last token)
+    - labels are shifted right (excludes first token)
 
-def make_sft_collate(tokenizer: PreTrainedTokenizer,  max_seq_length: int, label_pad_token_id: int = -100):
-    
-    max_seq_length += 1  #to take account of the switch between input_ids and label
-    
-    def _apply(row):
-        #tokenizer.padding_side = "left"
+    Args:
+        tokenizer: A HuggingFace PreTrainedTokenizer with pad_token_id set.
+        max_seq_length: Maximum sequence length for padding/truncation.
+        label_pad_token_id: Token ID used to pad labels (default: -100, ignored by loss).
+    """
+    # Add 1 to account for the shift between input_ids and labels
+    max_seq_length += 1
+
+    def _apply(row: Dict[str, Any]) -> Tuple[List[int], List[int], List[int]]:
         return sft_tulu_tokenize_and_truncate(row, tokenizer, max_seq_length)
 
-    def _pad_left(batch_seqs, pad_id, max_seq_length):
-        #max_len = max(len(s) for s in batch_seqs)
-        return [[pad_id] * (max_seq_length - len(s)) + s for s in batch_seqs]
-    
+    def _pad_left(batch_seqs: List[List[int]], pad_id: int, length: int) -> List[List[int]]:
+        return [[pad_id] * (length - len(s)) + s for s in batch_seqs]
 
-    def _wrapped(batch):
-        input_ids, attn, labels = [], [], []
+    def _collate(batch: List[Dict[str, Any]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        input_ids, labels, attn = [], [], []
         for row in batch:
-        # batch est une liste de rows bruts (non tokenizés)
-            ids, at, lbl = _apply(row)
+            ids, lbl, at = _apply(row)
             input_ids.append(ids)
-            attn.append(at)
             labels.append(lbl)
+            attn.append(at)
 
         input_ids = _pad_left(input_ids, tokenizer.pad_token_id, max_seq_length)
         attn = _pad_left(attn, 0, max_seq_length)
@@ -102,8 +118,5 @@ def make_sft_collate(tokenizer: PreTrainedTokenizer,  max_seq_length: int, label
         labels = torch.tensor(labels, dtype=torch.long)
 
         return input_ids[..., :-1], attn[..., :-1], labels[..., 1:]
-    return _wrapped
 
-
-
-
+    return _collate
