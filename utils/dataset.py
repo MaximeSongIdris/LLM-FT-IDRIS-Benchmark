@@ -110,13 +110,13 @@ def make_sft_collate(
             attn.append(at)
 
         input_ids = _pad_left(input_ids, tokenizer.pad_token_id, max_seq_length)
-        attn = _pad_left(attn, 0, max_seq_length)
         labels = _pad_left(labels, label_pad_token_id, max_seq_length)
+        attn = _pad_left(attn, 0, max_seq_length)
 
         input_ids = torch.tensor(input_ids, dtype=torch.long)
-        attn = torch.tensor(attn, dtype=torch.long)
         labels = torch.tensor(labels, dtype=torch.long)
+        attn = torch.tensor(attn, dtype=torch.long)
 
-        return input_ids[..., :-1], attn[..., :-1], labels[..., 1:]
+        return input_ids[..., :-1], labels[..., 1:], attn[..., :-1]
 
     return _collate

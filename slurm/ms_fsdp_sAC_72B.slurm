@@ -31,13 +31,15 @@ time srun singularity exec \
     --nv \
     --bind $WORK \
     $WORK/test_multi_noeuds/nemo_2509.sif \
-    python $WORK/test_multi_noeuds/Democratizing-LLM-FT/FSDP_sAC.py \
+    python -u $WORK/test_multi_noeuds/Democratizing-LLM-FT/FSDP_sAC.py \
         --batch-size 2 \
+        --epochs 1 \
         --grad-acc 1 \
         --test \
-        --cpu-usage \
+        --display-optimizer-dtype \
+        --dataset-path /lustre/work/sos/ssos027/test_multi_noeuds/Democratizing-LLM-FT/dataset/tulu-3-sft-mixture \
         --model-path $WORK/test_multi_noeuds/Democratizing-LLM-FT/model/Qwen2.5-72B-Instruct \
-        --selective-activation-checkpointing 0 \
+        --selective-activation-checkpointing 1 \
         --compile
 
 date

@@ -1,9 +1,11 @@
 import os
 # https://stackoverflow.com/questions/62691279/how-to-disable-tokenizers-parallelism-true-false-warning/72926996#72926996: Rust multi-threading conflicts when Dataloader forks its workers.
-os.environ["TOKENIZER_PARALLELISM"] = "false"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from argparse import ArgumentParser, Namespace, BooleanOptionalAction
 from pathlib import Path
+import random
+import socket
 
 from datasets import load_dataset
 from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
@@ -21,9 +23,10 @@ import torch.distributed as dist
 
 from utils import (
     apply_fsdp_checkpointing,
-    Chronometer,
+    expand_hostlist,
     make_sft_collate,
-    memory_usage
+    memory_usage,
+    TrainingChronometer,
 )
 
 
@@ -45,24 +48,36 @@ def is_main_process():
     return get_rank() == 0
 
 def setup():
-    """Initialize distributed training with SLURM"""
+    """Initialize distributed training.
+
+    With SLURM:
+        All environment variables (SLURM_JOB_NODELIST, SLURM_JOB_ID, SLURM_NTASKS, etc.)
+        are automatically set by the scheduler. The master port is derived from SLURM_JOB_ID
+        to minimize the chance of using an already allocated port.
+
+    Without SLURM (we suppose that it is a mono-gpu script):
+        Defaults to localhost with a random port. For multiple single-GPU scripts on the
+        same node, set job to select the GPU for each script:
+            CUDA_VISIBLE_DEVICES=0 python FSDP_sAC.py
+
+    Returns:
+        torch.device: The CUDA device assigned to this process.
+    """
     # SLURM environment variables
-    local_rank = int(os.environ.get("SLURM_LOCALID", 0))
-    rank = int(os.environ.get("SLURM_PROCID", 0))
+    master_addr = expand_hostlist(str(os.environ.get("SLURM_JOB_NODELIST", "localhost")))[0]
+    master_port = 10000 + int(os.environ.get("SLURM_JOB_ID", random.randint(0, 9999))) % 10000
     world_size = int(os.environ.get("SLURM_NTASKS", 1))
+    n_nodes = int(os.environ.get("SLURM_JOB_NUM_NODES", 1))
+    gpus_per_node = int(os.environ.get("SLURM_GPUS_ON_NODE", 1))
+    node_id = int(os.environ.get("SLURM_NODEID", 0))
+    rank = int(os.environ.get("SLURM_PROCID", 0))
+    local_rank = int(os.environ.get("SLURM_LOCALID", 0))
 
     # Set environment variables for PyTorch
     os.environ["RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world_size)
-
-    if "SLURM_JOB_NODELIST" in os.environ:  # Get master address and port from SLURM
-        hostnames = expand_hostlist(os.environ["SLURM_JOB_NODELIST"])
-        master_addr = hostnames[0]
-        os.environ["MASTER_ADDR"] = master_addr
-    else:
-        os.environ["MASTER_ADDR"] = "localhost"
-
-    os.environ["MASTER_PORT"] = str(10000 + int(os.environ["SLURM_JOB_ID"]) % 10000)
+    os.environ["MASTER_ADDR"] = str(master_addr)
+    os.environ["MASTER_PORT"] = str(master_port)
 
     # Initialize process group
     dist.init_process_group(backend="nccl", init_method="env://")
@@ -71,14 +86,14 @@ def setup():
     # Summary
     if is_main_process():
         PREFIX = "%i - " % rank
-        print(PREFIX + "Number of nodes: %i" % int(os.environ["SLURM_JOB_NUM_NODES"]))
-        print(PREFIX + "Node ID        : %i" % int(os.environ["SLURM_NODEID"]))
-        print(PREFIX + "World size     : %i" % world_size)
-        print(PREFIX + "GPUs per node  : %i" % int(os.environ["SLURM_GPUS_ON_NODE"]))
-        print(PREFIX + "Local rank     : %i" % local_rank)
         print(PREFIX + "Master node    : %s" % master_addr)
+        print(PREFIX + "Port           : %s" % master_port)
+        print(PREFIX + "World size     : %i" % world_size)
+        print(PREFIX + "Number of nodes: %i" % n_nodes)
+        print(PREFIX + "GPUs per node  : %i" % gpus_per_node)
         print(PREFIX + "Hostname       : %s" % socket.gethostname())
-        print(PREFIX + "Port           : %s" % os.environ["MASTER_PORT"])
+        print(PREFIX + "Node ID        : %i" % node_id)
+        print(PREFIX + "Local rank     : %i" % local_rank)
 
     return torch.device(f'cuda:{local_rank}')
 
@@ -96,14 +111,10 @@ def parse_args() -> Namespace:
     parser.add_argument('--epochs', default=2, type=int, help='Number of epochs')
     parser.add_argument('--grad-acc', default=1, type=int, help='Number of batches used for a single weights update')
 
-    # Benchmarking
-    parser.add_argument('--test', default=False, action=BooleanOptionalAction, help='Test 100 iterations')
-    parser.add_argument('--test-nsteps', default=100, type=int, help='The number of steps in test mode.')
-    parser.add_argument("--optimizer-precision", default=False, action=BooleanOptionalAction, help="Whether to print precision of optimizer states item.")
-    parser.add_argument("--cpu-usage", default=False, action=BooleanOptionalAction, help="Whether to print CPU memory Usage.")
-
-    # JIT related arguments
-    parser.add_argument("--compile", default=False, action=BooleanOptionalAction, help="whether or not to compile model")
+    # Benchmarking / debugging arguments
+    parser.add_argument('--test', default=False, action=BooleanOptionalAction, help='Run in test mode for a limited number of steps')
+    parser.add_argument('--test-nsteps', default=100, type=int, help='Number of steps to run in test mode')
+    parser.add_argument("--display-optimizer-dtype", default=False, action=BooleanOptionalAction, help="Print precision of optimizer state tensors")
 
     # DataLoader related arguments
     parser.add_argument('--dataset-path', type=Path, help="HuggingFaceHub dataset's name.")
@@ -119,6 +130,7 @@ def parse_args() -> Namespace:
     # Model related arguments
     parser.add_argument("--model-path", type=Path, help="HuggingFaceHub model's name.")
     parser.add_argument("--selective-activation-checkpointing", default=None, type=str, help='For a given ac ratio p, we should essentially apply ac on every "1/p" blocks.')
+    parser.add_argument("--compile", default=False, action=BooleanOptionalAction, help="whether or not to compile model")
 
     return parser.parse_args()
 
@@ -126,11 +138,11 @@ args = parse_args()
 
 
 if is_main_process():
-    chrono = Chronometer()
+    chrono = TrainingChronometer()
 
     print(f"Global batch size                       : {args.batch_size*args.grad_acc*get_world_size()}")
     print(f"Gradient accumulation                   : {args.grad_acc}")
-    print(f"Mini batch size (per GPUs)              : {args.batch_size}")
+    print(f"Mini batch size (per GPU)               : {args.batch_size}")
     print(f"Sequence length                         : {args.seq_length}")
     print(f"Selective activation checkpointing ratio: {args.selective_activation_checkpointing}")
     print(f"Compile                                 : {args.compile}")
@@ -138,82 +150,82 @@ if is_main_process():
 
 # 3. Model processing
 
+## bf16 model
 if is_main_process(): chrono.timer(start=True)
+
 model = AutoModelForCausalLM.from_pretrained(args.model_path, torch_dtype="bfloat16", trust_remote_code=True)
-num_parameters = sum(param.numel() for param in model.parameters())
-tokenizer = AutoTokenizer.from_pretrained(args.model_path, padding_side="left")
-if is_main_process(): print(f"Time to load the model and its tokenizer: {chrono.timer(start=False):.3f} s")
+tokenizer = AutoTokenizer.from_pretrained(args.model_path, padding_side="left", use_fast=True)
 
+if is_main_process(): print(f"Time to load the model (bf16) and its tokenizer: {chrono.timer(start=False):.3f} s")
 
-
+## sAC
 if args.selective_activation_checkpointing:
     model.config.use_cache = False  # deactivate KV caching (conflicts with activation checkpointing)
     BlockCls = type(model.model.layers[0])
+    if is_main_process(): print(BlockCls)
     apply_fsdp_checkpointing(model, BlockCls, args.selective_activation_checkpointing)
 
+## FSDP
+if is_main_process(): chrono.timer(start=True)
 
-
-
-#### Distribute the Model
-if RANK == 0: chrono.timer(start=True)
-
-fsdp_kwargs = {}
-fsdp_kwargs["mp_policy"] = MixedPrecisionPolicy(
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.float32,
-        )
+fsdp_kwargs = {
+    "mp_policy": MixedPrecisionPolicy(
+        param_dtype=torch.bfloat16,
+        reduce_dtype=torch.float32,
+    )
+}
 
 for layer in model.model.layers:
     fully_shard(layer.type(torch.float32), **fsdp_kwargs)
 fully_shard(model.type(torch.float32), **fsdp_kwargs)
 
-if RANK == 0: print(f"Time to shard the model: {chrono.timer(start=False):.3f}s")
+if is_main_process(): print(f"Time to shard the model: {chrono.timer(start=False):.3f} s")
 
-# Transfer to GPU
-model = model.to(device, non_blocking=args.non_blocking)
+## Transfer to GPU
+model = model.to(device)
 
-if RANK == 0: print(f"Time to transfer the model to GPU: {chrono.timer(start=False):.3f}s")
+if is_main_process(): print(f"Time to transfer the model to GPU: {chrono.timer(start=False):.3f} s")
 
-#### JIT
+## JIT
 if args.compile:
     model = torch.compile(model)
 
-    if RANK == 0: print(f"Time to instantiate torch.compile: {chrono.timer(start=False):.3f}s")
-####
+    if is_main_process(): print(f"Time for torch.compile: {chrono.timer(start=False):.3f} s")
 
-if RANK == 0:
-    #print(f"model: {model}")
-    print(f"number of parameters: {num_parameters}")
-    print(f'Pre-loop Model MaxMemory for GPU:{RANK} {torch.cuda.max_memory_allocated()/2**30} GBytes')
+if is_main_process():
+    print(f"Model: {model}")
+    print(f"Number of parameters: {sum(param.numel() for param in model.parameters())}")
+    print(f'Pre-loop GPU memory usage: {torch.cuda.max_memory_allocated()/2**30} GB')
 
-"""
-#### Data Loading
-if RANK == 0: chrono.timer(start=True)
-train_dataset = load_dataset("parquet", data_files=str(dataset_path) + '/*.parquet', split="train")  # 
+
+# 4. Data processing
+
+train_dataset = load_dataset(str(args.dataset_path), split="train")
 collate_fn = make_sft_collate(tokenizer, max_seq_length=args.seq_length)
 
 sampler = DistributedSampler(
     dataset=train_dataset,
-    rank=RANK,
-    num_replicas=WORLD_SIZE,
+    rank=get_rank(),
+    num_replicas=get_world_size(),
     shuffle=True,
 )
-
 dataloader = DataLoader(
     dataset=train_dataset,
     batch_size=args.batch_size,
-    num_workers=args.num_workers,
     collate_fn=collate_fn,
-    pin_memory=True,
-    persistent_workers=args.persistent_workers,
-    prefetch_factor=args.prefetch_factor,
     sampler=sampler,
+    num_workers=args.num_workers,
+    prefetch_factor=args.prefetch_factor,
+    persistent_workers=args.persistent_workers,
+    pin_memory=True,
+    shuffle=False
 )
-####
 
-if RANK == 0: print(f"Time to load dataset and initialize dataloader: {chrono.timer(start=False):.3f}s")
+if is_main_process(): print(f"Time to load dataset and initialize dataloader: {chrono.timer(start=False):.3f} s")
 
-#### Training step
+
+# 5. Training preparation
+
 criterion = CrossEntropyLoss(ignore_index=-100)
 optimizer = AdamW(
     params=model.parameters(),
@@ -222,69 +234,71 @@ optimizer = AdamW(
     eps=1e-05,
 )
 
-if RANK == 0:
-    print(f'global batch size: {args.batch_size * WORLD_SIZE} - mini batch size: {args.batch_size}')
-    print(f"DATALOADER {args.num_workers} {args.persistent_workers} {args.prefetch_factor}")
+if is_main_process():
+    print(f"DataLoader: {args.num_workers} {args.persistent_workers} {args.prefetch_factor}")
     print(f"Optimizer: {optimizer}")
 
-lr_warmup_iters = int(len(dataloader) * args.lr_warmup_ratio)  * args.epochs / args.grad_acc
+total_steps = len(dataloader) * args.epochs // args.grad_acc
+lr_warmup_iters = int(args.lr_warmup_ratio * total_steps)
 warmup_lr_scheduler = LinearLR(
     optimizer,
-    start_factor=1e-9,
+    start_factor=1e-6,
     end_factor=1,
     total_iters=lr_warmup_iters,
 )
 annealing_lr_scheduler = CosineAnnealingLR(
     optimizer,
-    T_max=len(dataloader) * args.epochs / args.grad_acc - lr_warmup_iters,
+    T_max=total_steps - lr_warmup_iters,
     eta_min=0.,
 )
 lr_scheduler = SequentialLR(
     optimizer,
-    schedulers=[warmup_lr_scheduler,annealing_lr_scheduler],
+    schedulers=[warmup_lr_scheduler, annealing_lr_scheduler],
     milestones=[lr_warmup_iters]
 )
 
-loss_metric = RunningMean(window=5).to(device)
-perplexity = Perplexity(ignore_index=-100).to(device)
+avg_loss = RunningMean(window=10*args.grad_acc).to(device)  # average of the last 10 steps
+perplexity = Perplexity(ignore_index=-100).to(device)  # save all perplexity computations
 
 
-#### Training loop
-if args.test: chrono.start_training()
-    
-if RANK == 0: chrono.timer(start=True)
+# 6. Training loop
 
-if args.test: args.epochs = 1 #Test with only 100 steps
+if is_main_process():
+    chrono.track_training_time(start=True)
+
 for epoch in range(args.epochs):
-    #set epoch for sampler
-    sampler.set_epoch(epoch)
-    if args.test: chrono.dataload()
-    for i, (input_ids, attention_mask, labels) in enumerate(dataloader, start=1):
+    sampler.set_epoch(epoch)  # set epoch for a sampler
+
+    if is_main_process(): 
+        chrono.timer(start=True)  # track the first step duration
+        chrono.track_dataloading_step_time(start=True)
+
+    for i, (input_ids, labels, attention_mask) in enumerate(dataloader, start=1):
         if args.test and i > args.test_nsteps * args.grad_acc: break
     
         input_ids = input_ids.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
         attention_mask = attention_mask.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=args.non_blocking)
     
-        if args.test:
-            chrono.dataload()
-            chrono.forward()
+        if is_main_process():
+            chrono.track_dataloading_step_time(start=False)
+            chrono.track_forward_step_time(start=True)
     
-        # passes and weights update
-        logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
-        bsz, seq_len, vocab_size = logits.shape
-        loss: torch.Tensor = criterion(logits.view(bsz * seq_len, vocab_size), labels.view(bsz * seq_len))
-        loss /= WORLD_SIZE
-        loss /= args.grad_acc
+        # Forward
+        local_logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
+        bs, seq_len, vocab_size = local_logits.shape
+        local_loss: torch.Tensor = criterion(local_logits.view(bs * seq_len, vocab_size), labels.view(bs * seq_len))
+        local_loss /= args.grad_acc  # take into account gradient accumulation impact
         
-        loss_metric.update(loss)
-        perplexity.update(logits, labels)
+        # Global metrics
+        avg_loss.update(local_loss)
+        perplexity.update(local_logits, labels)
         
-        if args.test: 
-            chrono.forward()
-            chrono.backward()
+        if is_main_process():
+            chrono.track_forward_step_time(start=False)
+            chrono.track_backward_step_time(start=True)
             
-        loss.backward()
+        local_loss.backward()  # gradients are automatically divided by world_size: https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/_runtime_utils.py#L831
         
         if i % args.grad_acc == 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -292,25 +306,28 @@ for epoch in range(args.epochs):
             lr_scheduler.step()
             optimizer.zero_grad()
         
-        if args.test:
-            chrono.backward()
+        if is_main_process():
+            chrono.track_backward_step_time(start=False)
+            chrono.track_dataloading_step_time(start=True)
         
-        step = (i // args.grad_acc) + 1
-        if step % 10 == 0 and i % args.grad_acc == 0:
-            L = loss_metric.compute()
+        # Log training info
+        step = ( (i-1) // args.grad_acc) + 1
+        if step % 10 == 0 and i % args.grad_acc == 0:  # at the end of every 10 steps
+            L = avg_loss.compute()
             perp = perplexity.compute()
             last_lr = lr_scheduler.get_last_lr()[0]
-            if RANK == 0:
-                print(f"Step {step} / {args.test_nsteps if args.test else len(dataloader) // args.grad_acc} | Loss: {L.item():.3f} | Perplexity: {perp.item():.3f} | LR: {last_lr:0.3e} | Wall: {chrono.tac_time():.3f}")
+            if is_main_process():
+                print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else len(dataloader) // args.grad_acc} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
 
-        if i==1 and RANK == 0: print(f"Time to first step - compile Graph Building: {chrono.timer(start=False):.3f}s")
-####
+        if i == 1 and is_main_process():
+            print(f"Time to first step (may include torch.compile tracing): {chrono.timer(start=False):.3f} s")
 
-    ######### Model Checkpointing at each epoch ############
-    
-    if not args.test:
-        ckeckpoint_name =  f"model_state_dict_{os.environ['SLURM_JOB_ID']}_epoch{epoch}.pt"
-        print(f"Model Checkpointing - Building the {ckeckpoint_name} file")
+
+    # Checkpointing by rank 0
+    if not args.test and is_main_process():
+        checkpoint_name = f"checkpoint/model_state_dict_{os.environ.get('SLURM_JOB_ID', 'XXX')}_epoch{epoch}.pt"
+        
+        print(f"Model Checkpointing - Building the {checkpoint_name} file")
         model_state_dict = get_model_state_dict(
             model=model,
             options=StateDictOptions(
@@ -318,29 +335,19 @@ for epoch in range(args.epochs):
                 cpu_offload=True,
             )
         )
-        torch.save(model_state_dict, ckeckpoint_name)
-
-
-
-    ###############################
-
-if args.test: chrono.display_training_results()
-
+        torch.save(model_state_dict, checkpoint_name)
 dist.barrier()
-if RANK == 0:
-    print(f'MaxMemory for GPU:{RANK} {torch.cuda.max_memory_allocated()/2**30} GBytes')
 
-if args.optimizer_precision and RANK == 0:
-    for k, v in optimizer.state.items():
-        print(k, {kk: vv.dtype for kk, vv in v.items()})
-        break
+if is_main_process():
+    chrono.track_training_time(start=False)
+    chrono.display_training_results(args.batch_size, len(dataloader), args.grad_acc)
 
-if args.cpu_usage and RANK == 0:
-    print(f"RANK: {RANK}")
     memory_usage()
+    print(f'Post-loop GPU memory usage: {torch.cuda.max_memory_allocated()/2**30} GBytes')
 
+    if args.display_optimizer_dtype:
+        for k, v in optimizer.state.items():
+            print("Optimizer state dtypes:", {kk: vv.dtype for kk, vv in v.items()})
+            break
 
-
-dist.barrier()
-dist.destroy_process_group()
-"""
+cleanup()
