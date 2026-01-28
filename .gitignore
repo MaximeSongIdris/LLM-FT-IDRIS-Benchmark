@@ -1,4 +1,6 @@
 # Folders
 /dataset/
 /model/
+
+__pycache__
 slurm_logs/
