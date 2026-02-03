@@ -1,433 +1,297 @@
 #!/usr/bin/python3
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from nemo.utils.decorators import deprecated_warning
+"""SFT training script with FSDP2/Megatron strategies for multi-node distributed training.
 
-deprecated_warning(
-    old_method="Automodel on NVIDIA/NeMo", new_method="https://github.com/NVIDIA-NeMo/Automodel repo", wait_seconds=2
-)
+Source: https://docs.nvidia.com/nemo-framework/user-guide/25.04/automodel/sft.html
+"""
 
-import os
-import tempfile
+from argparse import ArgumentParser, BooleanOptionalAction, Namespace
 from pathlib import Path
+import os
 
+from datasets import load_dataset
+from nemo import lightning as nl
+from nemo.automodel.loss import masked_cross_entropy
+from nemo.automodel.misc_utils import calculate_valid_accumulate_grad_batches
+from nemo.collections import llm
+from nemo.collections.llm.gpt.data.hf_dataset import HFDatasetDataModule
+from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
+from transformers import AutoTokenizer
 import fiddle as fdl
 import lightning.pytorch as pl
 
-from nemo import lightning as nl
-from nemo.automodel.dist_utils import FirstRankPerNode
-from nemo.automodel.loss import chunked_cross_entropy, masked_cross_entropy
-from nemo.automodel.misc_utils import calculate_valid_accumulate_grad_batches
-from nemo.collections import llm
-from nemo.collections.llm.gpt.data.hf_dataset import HFMockDataModule, HFDatasetDataModule
-from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
-
-from transformers import AutoTokenizer
-import torch.distributed as dist
-
-import datasets
-from utils import (
-    make_sft_collate,
-    Chronometer,
-    MyChronoCallback
-)
+from utils import make_sft_collate, MyChronoCallback
 
 
+def _get_offload_policy(enable_cpu_offload: bool) -> "CPUOffloadPolicy | None":
+    """Return CPU offload policy if enabled, None otherwise."""
+    if not enable_cpu_offload:
+        return None
+    from nemo.lightning.pytorch.strategies.fsdp2_strategy import HAS_CPU_OFFLOAD_POLICY, CPUOffloadPolicy
+    assert HAS_CPU_OFFLOAD_POLICY, "Could not import offload policy"
+    return CPUOffloadPolicy()
 
-# Run this example with torchrun, for example:
-# torchrun --nproc-per-node=8 \
-#   examples/llm/finetune/automodel.py \
-#   --strategy fsdp2 \
-#   --devices 8 \
-#   --model meta-llama/Llama-3.2-1B \
-#   --ckpt-folder "output"
-#
-# For PEFT please also pass --lora
-# Note: ensure that the --nproc-per-node and --devices values match.
+def create_strategy(
+    strategy_name: str,
+    model: llm.HFAutoModelForCausalLM,
+    devices_per_node: int,
+    num_nodes: int,
+    dp_size: int,
+    tp_size: int,
+    cp_size: int,
+    sequence_parallel: bool = False,
+    enable_cpu_offload: bool = False,
+    rank: int = 0,
+) -> pl.strategies.Strategy:
+    """Create a PyTorch Lightning training strategy for distributed training.
 
+    Supports single-device training or multi-device parallelism with combinations
+    of Data Parallel (DP), Tensor Parallel (TP), and Context Parallel (CP).
+    """
+    checkpoint_io = model.make_checkpoint_io()
 
-def make_strategy(
-    rank,
-    strategy,
-    model,
-    devices,
-    num_nodes,
-    adapter_only=False,
-    enable_cpu_offload=False,
-    dp_size=None,
-    tp_size=None,
-    cp_size=None,
-    sequence_parallel=False,
-    use_hf_tp_plan=False,
-):
-    if strategy == 'auto':
-        return pl.strategies.SingleDeviceStrategy(
-            device='cuda:0',
-            checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
-        )
-    elif strategy == 'ddp':
-        return pl.strategies.DDPStrategy(
-            checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
-            find_unused_parameters=True,
-        )
-        if rank == 0: print(f"Using DDP with DP={dp_size}, TP={tp_size}, CP={cp_size}")
-    elif strategy == 'fsdp2':
-
-        offload_policy = None
-        if enable_cpu_offload:
-            from nemo.lightning.pytorch.strategies.fsdp2_strategy import HAS_CPU_OFFLOAD_POLICY, CPUOffloadPolicy
-
-            assert HAS_CPU_OFFLOAD_POLICY, "Could not import offload policy"
-            offload_policy = CPUOffloadPolicy()
-
-        assert (
-            dp_size * tp_size * cp_size == devices * num_nodes
-        ), "Data Parallel size * Tensor Parallel size * Context Parallel size must equal to devices * num_nodes"
-        if rank == 0: print(f"Using FSDP2 with DP={dp_size}, TP={tp_size}, CP={cp_size}")
-
-        return nl.FSDP2Strategy(
-            data_parallel_size=dp_size,
-            tensor_parallel_size=tp_size,
-            context_parallel_size=cp_size,
-            sequence_parallel=sequence_parallel,
-            checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
-            offload_policy=offload_policy,
-            use_hf_tp_plan=use_hf_tp_plan,
-        )
+    if strategy_name == 'SingleDevice':
+        return pl.strategies.SingleDeviceStrategy(device='cuda:0', checkpoint_io=checkpoint_io)
     else:
-        raise NotImplementedError("Encountered unknown strategy")
+        total_devices = devices_per_node * num_nodes
+        expected = dp_size * tp_size * cp_size
+        assert expected == total_devices, (f"DP*TP*CP = {expected} must equal devices*num_nodes = {total_devices}")
+
+        if strategy_name == 'DDP+TP+CP':
+            if rank == 0:
+                print(f"Using MegatronStrategy (DDP+TP+CP) with DP={dp_size}, TP={tp_size}, CP={cp_size}")
+            return nl.MegatronStrategy(
+                ddp="megatron",
+                find_unused_parameters=True,
+                tensor_model_parallel_size=tp_size,
+                sequence_parallel=sequence_parallel,
+                context_parallel_size=cp_size,
+                checkpoint_io=checkpoint_io,
+            )
+
+        elif strategy_name == 'FSDP2+TP+CP':
+            if rank == 0:
+                print(f"Using FSDP2Strategy (FSDP2+TP+CP) with DP={dp_size}, TP={tp_size}, CP={cp_size}")
+            return nl.FSDP2Strategy(
+                data_parallel_size=dp_size,
+                tensor_parallel_size=tp_size,
+                use_hf_tp_plan=True,
+                sequence_parallel=sequence_parallel,
+                context_parallel_size=cp_size,
+                offload_policy=_get_offload_policy(enable_cpu_offload),
+                checkpoint_io=checkpoint_io,
+            )
+
+        raise ValueError(f"Unknown strategy: {strategy_name}")
 
 
-def logger(ckpt_folder, save_every_n_train_steps) -> nl.NeMoLogger:
-    ckpt = nl.ModelCheckpoint(
-        save_last=True,
-        every_n_train_steps=save_every_n_train_steps,
-        monitor="reduced_train_loss",
-        save_top_k=1,
-        save_on_train_epoch_end=True,
-        save_optim_on_train_end=True,
-    )
+def parse_args() -> Namespace:
+    """Process command-line arguments."""
+    parser = ArgumentParser()
 
-    return nl.NeMoLogger(
-        name="nemo2_finetune",
-        log_dir=ckpt_folder,
-        use_datetime_version=False,  # must be false if using auto resume
-        ckpt=ckpt,
-        wandb=None,
-    )
+    # Training related arguments
+    parser.add_argument('--global-batch-size', type=int, default=128, help='Number of examples seen for one model update.')
+    parser.add_argument('--batch-size', type=int, default=1, help='Batch size per GPU.')
+    parser.add_argument('--seq-length', type=int, default=4096, help='Sequence length of each sample per GPU.')
+    parser.add_argument('--epochs', type=int, default=2, help='Number of epochs.')
+
+    # DataLoader related arguments
+    parser.add_argument('--dataset-path', type=Path, help='HuggingFaceHub dataset path.')
+    parser.add_argument('--num-workers', type=int, default=4, help='Number of workers spawned by the dataloader.')
+
+    # Optimizer related arguments
+    parser.add_argument('--lr-warmup-ratio', type=float, default=0.1, help='Fraction of training steps for linear LR warmup (0.1 = 10%).')
+    parser.add_argument('--learning-rate', type=float, default=1e-5, help='Learning rate for AdamW.')
+    parser.add_argument('--weight-decay', type=float, default=0.1, help='Weight decay for AdamW.')
+
+    # Model related arguments
+    parser.add_argument('--model-path', type=Path, help='HuggingFaceHub model path.')
+    parser.add_argument('--trust-remote-code', action='store_true', help='Trust remote code for HF models.')
+    parser.add_argument('--attn-implementation', choices=['flash_attention_2', 'sdpa', 'eager'],
+                        default='flash_attention_2', help='Attention implementation.')
+    parser.add_argument('--enable-activation-ckpt', action='store_true', help='Enable activation checkpointing.')
+    parser.add_argument('--fp8', action='store_true', help='Enable FP8 training.')
+    parser.add_argument('--liger', action='store_true', help='Enable Liger-Kernels.')
+    parser.add_argument('--compile', action=BooleanOptionalAction, default=False, help='Whether or not to compile model.')
+
+    # Distributed training arguments
+    parser.add_argument('--strategy', choices=['SingleDevice', 'DDP+TP+CP', 'FSDP2+TP+CP'], default='FSDP2+TP+CP', help='Training strategy.')
+    parser.add_argument('--devices-per-node', type=int, default=2, help='Number of GPUs per node.')
+    parser.add_argument('--num-nodes', type=int, default=1, help='Number of nodes.')
+    parser.add_argument('--dp-size', type=int, help='Data parallel size.')
+    parser.add_argument('--tp-size', type=int, default=1, help='Tensor parallel size.')
+    parser.add_argument('--cp-size', type=int, default=1, help='Context parallel size.')
+    parser.add_argument('--sequence-parallel', action='store_true', help='Enable sequence parallelism (requires TP>1).')
+    parser.add_argument('--enable-cpu-offload', action='store_true', help='Enable CPU offloading (FSDP2 only).')
+
+    # Logging / Checkpointing arguments
+    parser.add_argument('--log-every-n-steps', type=int, default=10, help='Logging frequency.')
+    parser.add_argument('--wandb-project', help='Wandb project name.')
+
+    return parser.parse_args()
 
 
-def main():
-    """Example script to run SFT/PEFT with a HF transformers-instantiated model on squad."""
-    import argparse
+def main() -> None:
+    """Run SFT with HuggingFace model using FSDP2 or Megatron strategies."""
+    # 1. Get command-line arguments
+    args = parse_args()
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default='Qwen/Qwen2.5-72B-Instruct', help='Hugging Face model-id to use')
-    parser.add_argument(
-        '--strategy',
-        type=str,
-        default='fsdp2',
-        choices=['auto', 'ddp', 'fsdp2'],
-        help='Training strategy e.g. ddp/fsdp2/single-gpu',
-    )
-    parser.add_argument('--devices', type=int, default=2, help='Number of GPUs to use')
-    parser.add_argument('--num-nodes', type=int, default=1, help='Number of Nodes to use; to be used with torchrun')
-    parser.add_argument('--dp-size', type=int, default=None, help='Data Parallel size; to be used with fsdp2')
-    parser.add_argument('--tp-size', type=int, default=1, help='Tensor Parallel size; to be used with fsdp2')
-    parser.add_argument('--cp-size', type=int, default=1, help='Context Parallel size; to be used with fsdp2')
-    parser.add_argument(
-        '--sequence-parallel',
-        action='store_true',
-        help='Use Sequence Parallelism; to be used with fsdp2 and tp_size > 1',
-    )
-    parser.add_argument('--use-hf-tp-plan', action='store_true', help='Use huggingface TP plan; to be used with TP')
-    parser.add_argument('--use-te-optimizer', action='store_true', help='Use TE optimizer')
-    parser.add_argument('--grad-clip', type=float, default=None, help='Grad clip value')
-    parser.add_argument(
-        '--accumulate-grad-batches',
-        type=int,
-        default=1,
-        help='Number of batches to accumulate gradient over.',
-    )
-    parser.add_argument('--num-workers', type=int, default=4)
-    parser.add_argument('--max-steps', type=int, default=100, help='Maximum number of training steps')
-    parser.add_argument('--log-every-n-steps', type=int, default=10, help='Log every n steps')
-    parser.add_argument('--max-epochs', type=int, default=2, help='Maximum number of training epochs')
-    parser.add_argument('--wandb-project', type=str, default=None, help='Wandb project to use')
-    parser.add_argument('--use-torch-jit', action='store_true', help='Enables torch.compile on model')
-    parser.add_argument('--enable-cpu-offload', action='store_true', help='Enabled cpu offloading; requires FSDP2')
-    parser.add_argument('--auto-resume', action='store_true', help='Enables autoresume from a previous training job')
-    parser.add_argument('--liger', action='store_true', help='Enables Liger-Kernels')
-    parser.add_argument(
-        '--attn-implementation',
-        type=str,
-        default="flash_attention_2",
-        choices=["flash_attention_2", "sdpa", "eager"],
-        help='Attention implementation to use. Default: flash_attention_2',
-    )
-    parser.add_argument('--enable-grad-ckpt', action='store_true', help='Enables gradient checkpoint')
-    parser.add_argument(
-        '--ckpt-folder', type=str, default=tempfile.TemporaryDirectory().name, help='Directory to save checkpoints'
-    )
-    parser.add_argument('--global-batch-size', default=128, type=int, help='Global batch size to use for training.')
-    parser.add_argument(
-        '--batch-size',
-        '--micro-batch-size',
-        dest='batch_size',
-        default=1,
-        type=int,
-        help='Micro batch size to use for training.',
-    )
-    parser.add_argument(
-        '--limit-val-batches',
-        default=0.0,
-        type=float,
-        help=(
-            'How much of validation dataset to check. Useful when debugging or testing '
-            'something that happens at the end of an epoch. Default to 0.0 (disabled)'
-        ),
-    )
-    parser.add_argument('--seq-length', default=4096, type=int, help='Sequence length to use for training')
-    parser.add_argument(
-        '--trust-remote-code',
-        action='store_true',
-        help='Enables trust_remote_code to load HF models with unverified sources',
-    )
-    parser.add_argument('--load-in-4bit', action='store_true', help='Use 4-bit quantization for e.g. for qlora')
-    parser.add_argument('--fp8', action='store_true', help='Enables fp8 training')
-    parser.add_argument('--lr', type=float, default=3e-6, help='Learning rate for training.')
-    parser.add_argument(
-        '--use-chunked-ce', action='store_true', help='Use chunked cross entropy loss instead of the standard CE loss.'
-    )
-    parser.add_argument('--no-lce', action='store_false', help='Disables LCE')
-    parser.add_argument('--mock-dataset', action='store_true', help='Use HFMockDataModule for training.')
-    parser.add_argument(
-        '--limit-dataset-samples',
-        type=int,
-        default=None,
-        help='If set will limit num of dataset samples. Default None (disabled)',
-    )
-    parser.add_argument(
-        '--packed-sequence-size',
-        type=int,
-        default=-1,
-        help='If a positive integer, this arg enables training with sequence packing in case of HFDatasetDataModule'
-        'class and specifies the pack size. If less than or equal to 0, sequence packing is disabled. Packed sequences'
-        'are currently supported only with position_ids and not attention_mask. Hence packed sequences needs to be'
-        'run with --attn-implementation=flash_attention_2',
-    )
-    parser.add_argument('--start-of-turn-token', default=None, help='Chat turn token')
-    parser.add_argument('--lora', action='store_true', help='Enables PEFT (LoRA) finetuning; Default: off (SFT).')
 
-    args = parser.parse_args()
-
-    # --- fix DP auto + checks ---
-    world = args.devices * args.num_nodes
-    denom = args.tp_size * args.cp_size
-
-    RANK = int(os.environ['SLURM_PROCID'])
-
-    if denom <= 0:
-        raise ValueError("tp_size and cp_size must be >=1")
-
-    if world % denom != 0:
-        raise ValueError(f"Incompatible config: world={world} not divisible by TP*CP={denom}")
-
-    if args.dp_size is None:
-        args.dp_size = world // denom
-
+    # 2. Distributed Training Setup
+    world = args.devices_per_node * args.num_nodes
+    rank = int(os.environ.get("RANK", 0))  # Set by torchrun
+    
     assert args.dp_size * args.tp_size * args.cp_size == world, \
         f"3D mismatch: DP*TP*CP={args.dp_size*args.tp_size*args.cp_size} != world={world}"
 
-
-    # CPUOffload WA for known issue
-    if args.enable_cpu_offload and args.use_te_optimizer:
-        args.use_te_optimizer = False
-
-    try:
-        args.accumulate_grad_batches = calculate_valid_accumulate_grad_batches(
-            global_batch_size=args.global_batch_size,
-            micro_batch_size=args.batch_size,
-            devices=args.devices,
-            num_nodes=args.num_nodes,
-            tp_size=args.tp_size,
-            cp_size=args.cp_size,
-        )
-    except ValueError as e:
-        print(f"Error calculating gradient accumulation steps: {e}")
-        print("Using default value of 1 for accumulate_grad_batches")
-        args.accumulate_grad_batches = 1
-
-    if RANK == 0: print(
-    f"world size: {world}, GBS: {args.global_batch_size}, BSperDev: {args.batch_size}, grad accumulation:{args.accumulate_grad_batches}, sequence length: {args.seq_length}, grad_check: {args.enable_grad_ckpt},  attention: {args.attn_implementation}, Liger-Kernels: {args.liger}"
+    ## Print info
+    grad_acc = calculate_valid_accumulate_grad_batches(
+        global_batch_size=args.global_batch_size,
+        micro_batch_size=args.batch_size,
+        devices=args.devices_per_node,
+        num_nodes=args.num_nodes,
+        tp_size=args.tp_size,
+        cp_size=args.cp_size,
     )
+    if rank == 0:
+        print(f"World size               : {world}")
+        print(f"Global batch size        : {args.global_batch_size}")
+        print(f"Gradient accumulation    : {grad_acc}")
+        print(f"Mini batch size (per GPU): {args.batch_size}")
+        print(f"Sequence length          : {args.seq_length}")
+        print(f"Activation checkpointing : {args.enable_activation_ckpt}")
+        print(f"Compile                  : {args.compile}")
+        print(f"Attention                : {args.attn_implementation}")
+        print(f"Liger-Kernels            : {args.liger}")
+        print(f"FP8 training             : {args.fp8}")
 
-    wandb = None
-    if args.wandb_project is not None:
-        model = '_'.join(args.model.split('/')[-2:])
-        from lightning.pytorch.loggers import WandbLogger
 
-        wandb = WandbLogger(
-            project=args.wandb_project,
-            name=f"{model}_nodes{args.num_nodes}_dev{args.devices}_strat_{args.strategy}_dp{args.dp_size}_cp{args.cp_size}_tp{args.tp_size}_sp{args.sequence_parallel}_seqlen{args.seq_length}_gb{args.global_batch_size}_mb{args.batch_size}_lr{args.lr}",
-        )
+    # 3. Model processing
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, padding_side="left", use_fast=True)
 
-    callbacks = []
-    if args.use_torch_jit:
-        jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': False}, use_thunder=False)
-        callbacks = [JitTransform(jit_config)]
-
-    callbacks.append(MyChronoCallback(RANK, args.accumulate_grad_batches))
-
-    if args.use_te_optimizer:
-        # Use TE optimizer
-        # Faster convergence but may lead to memory issues
-        optimizer = fdl.build(llm.adam.te_adam_with_flat_lr(lr=args.lr))
-    else:
-        optimizer = fdl.build(
-            llm.adam.pytorch_adam_with_flat_lr(lr=args.lr, foreach=False)
-        )  # foreach need to be False for TP
-
-    if args.fp8:
+    ## FP8
+    if args.fp8:  # source of the code ?
         from nemo.lightning.pytorch.accelerate.transformer_engine import TEConfig
-
         model_accelerator = TEConfig(fp8_autocast=True)
     else:
         model_accelerator = None
 
-    #####Path to define
-    ### Jean Zay
-    DSDIR = Path(os.environ["DSDIR"])
-    model_path = DSDIR / "HuggingFace_Models" / args.model
-    dataset_path = "/lustre/fswork/dataset/tulu-3-sft-mixture/data"
-    ### DALIA
-    #DSDIR = Path(os.environ.get("ALL_WORK", "")) / "BC"
-    #model_path = DSDIR / "HuggingFace_Models" / args.model
-    #dataset_path = DSDIR /  "tulu-3-sft-mixture/data"
-    ############
-
-    # ---------- data (parquet + collate) ----------
-    train_dataset = datasets.load_dataset(
-        "parquet",
-        data_files = dataset_path + "/*.parquet",
-        split="train"
-    )
-    # tokenizer HF (left padding) — cohérent avec SFT causal
-    try:
-        # chemin local via $DSDIR/HuggingFace_Models/<model>
-        tokenizer = AutoTokenizer.from_pretrained(str(model_path), padding_side="left")
-    except Exception:
-        tokenizer = AutoTokenizer.from_pretrained(args.model, padding_side="left")
-
-    def wrap_tuple_to_dict(old_collate_fn):
-        def new_collate_fn(batch):
-            t = old_collate_fn(batch)
-            if isinstance(t, (list, tuple)) and len(t) >= 3:
-                return {"input_ids": t[0], "attention_mask": t[1], "labels": t[2]}
-            raise TypeError(f"collate_fn returned {type(t)}, expected tuple of 3 elements")
-        return new_collate_fn
-
-    collate_fn = wrap_tuple_to_dict(make_sft_collate(tokenizer, max_seq_length=args.seq_length))
-
-    hf_dataset = HFDatasetDataModule(
-        train_dataset,
-        split="train",
-        collate_fn=collate_fn,
-        num_workers=args.num_workers,
-        seq_length=args.seq_length,
-        micro_batch_size=args.batch_size,
-        global_batch_size=args.global_batch_size,
-        pad_seq_len_divisible=16 if args.fp8 else None,
-        # packed_sequence=False,      # à activer si tu veux packer
-    )
-
     model = llm.HFAutoModelForCausalLM(
-        model_name=model_path,
+        model_name=args.model_path,
         tokenizer=tokenizer,
+        loss_fn=masked_cross_entropy,  # https://github.com/NVIDIA-NeMo/NeMo/blob/25.09-alpha.rc2/nemo/automodel/loss/masked_ce.py
         model_accelerator=model_accelerator,
-        attn_implementation=args.attn_implementation,
-        loss_fn=chunked_cross_entropy if args.use_chunked_ce else masked_cross_entropy,
         trust_remote_code=args.trust_remote_code,
+        attn_implementation=args.attn_implementation,
         use_liger_kernel=args.liger,
-        enable_grad_ckpt=args.enable_grad_ckpt,
-        use_linear_ce_loss=args.no_lce,
-        load_in_4bit=args.load_in_4bit,
-    )
+        enable_grad_ckpt=args.enable_activation_ckpt,
+    )  # https://github.com/NVIDIA-NeMo/NeMo/blob/25.09-alpha.rc2/nemo/collections/llm/gpt/model/hf_auto_model_for_causal_lm.py
 
-    assert (
-        args.devices * args.num_nodes == args.dp_size * args.tp_size * args.cp_size
-    ), f"Total devices {args.devices * args.num_nodes} must equal Data Parallel size {args.dp_size} * Tensor Parallel size {args.tp_size} * Context Parallel size {args.cp_size}."
+    ## JIT
+    callbacks = []
+    if args.compile:
+        jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': False}, use_thunder=False)
+        callbacks.append(JitTransform(jit_config))
 
-    strategy = make_strategy(
-        RANK,
-        args.strategy,
-        model,
-        args.devices,
-        args.num_nodes,
-        False,
-        args.enable_cpu_offload,
+    # Distributed training strategy
+    strategy = create_strategy(
+        strategy_name=args.strategy,
+        model=model,
+        devices_per_node=args.devices_per_node,
+        num_nodes=args.num_nodes,
         dp_size=args.dp_size,
         tp_size=args.tp_size,
         cp_size=args.cp_size,
         sequence_parallel=args.sequence_parallel,
-        use_hf_tp_plan=args.use_hf_tp_plan,
+        enable_cpu_offload=args.enable_cpu_offload,
+        rank=rank,
     )
 
-    resume = (
-        nl.AutoResume(
-            resume_if_exists=True,
-            resume_ignore_no_checkpoint=True,
+    if rank == 0:
+        print(f"Strategy                 : {args.strategy}")
+        print(f"DP size                  : {args.dp_size}")
+        print(f"TP size                  : {args.tp_size}")
+        print(f"CP size                  : {args.cp_size}")
+        print(f"Sequence parallel        : {args.sequence_parallel}")
+        print(f"CPU offload              : {args.enable_cpu_offload}")
+
+
+    # 4. Data processing
+    train_dataset = load_dataset(str(args.dataset_path), split="train[:20%]")
+
+    def wrap_tuple_to_dict(old_collate_fn):
+        def new_collate_fn(batch):
+            t = old_collate_fn(batch)
+            if isinstance(t, tuple) and len(t) >= 3:
+                return {"input_ids": t[0], "labels": t[1], "attention_mask": t[2]}
+            raise TypeError(f"collate_fn returned {type(t)}, expected tuple of 3 elements")
+        return new_collate_fn
+    collate_fn = wrap_tuple_to_dict(make_sft_collate(tokenizer, max_seq_length=args.seq_length))
+
+    hf_dataset = HFDatasetDataModule(
+        train_dataset,
+        collate_fn=collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=True,
+        seq_length=args.seq_length,
+        micro_batch_size=args.batch_size,
+        use_dist_sampler=True,
+        pad_seq_len_divisible=16 if args.fp8 else None,  # https://docs.nvidia.com/nemo/automodel/latest/guides/dataset-overview.html#important-considerations
+    )  # https://github.com/NVIDIA-NeMo/NeMo/blob/main/nemo/collections/llm/gpt/data/hf_dataset.py#L193
+    dataloader = hf_dataset.train_dataloader()
+
+
+    # 5. Training preparation
+
+    # Optimizer
+    total_steps = len(dataloader) * args.epochs // grad_acc
+    lr_warmup_iters = int(args.lr_warmup_ratio * total_steps)
+    optimizer = fdl.build(
+        llm.adam.pytorch_adam_with_cosine_annealing(
+            warmup_steps=lr_warmup_iters,
+            max_lr=args.learning_rate,
+            weight_decay=args.weight_decay,
         )
-        if args.auto_resume
-        else None
     )
 
 
-    if args.lora:
-        peft = llm.peft.LoRA(
-            target_modules=['*_proj'],
-            dim=8,
+    # 6. Training loop
+
+    # Wandb logging
+    wandb = None
+    if args.wandb_project is not None:
+        from lightning.pytorch.loggers import WandbLogger
+        wandb = WandbLogger(
+            project=args.wandb_project,
+            name=f"{args.model_path.name}_nodes{args.num_nodes}_devices{args.devices_per_node}_strat_{args.strategy}_dp{args.dp_size}_tp{args.tp_size}_cp{args.cp_size}_sp{args.sequence_parallel}_gbs{args.global_batch_size}_mbs{args.batch_size}_seqlen{args.seq_length}",
         )
-    else:
-        peft = None
+
+    # Chrono logging
+    callbacks.append(MyChronoCallback(rank, len(dataloader), grad_acc))
+
     llm.api.finetune(
         model=model,
         data=hf_dataset,
         trainer=nl.Trainer(
-            devices=args.devices,
-            num_nodes=args.num_nodes,
-            max_steps=args.max_steps,
-            max_epochs=args.max_epochs,
             accelerator='gpu',
             strategy=strategy,
-            log_every_n_steps=args.log_every_n_steps,
-            num_sanity_val_steps=0,
-            limit_val_batches=args.limit_val_batches,
-            accumulate_grad_batches=args.accumulate_grad_batches,
-            gradient_clip_val=args.grad_clip,
-            use_distributed_sampler=True,  # needed to use PL DistributedSampler
+            devices=args.devices_per_node,
+            num_nodes=args.num_nodes,
+            precision="bf16-mixed",
             logger=wandb,
             callbacks=callbacks,
-            precision="bf16-mixed",
-            enable_checkpointing=False,      # désactive les checkpoints automatiques
+            max_epochs=args.epochs,
+            max_steps=100,
+            log_every_n_steps=args.log_every_n_steps,
+            enable_checkpointing=False,
             enable_model_summary=False,
+            accumulate_grad_batches=grad_acc,
+            gradient_clip_val=1.0,
+            use_distributed_sampler=True,  # needed to use PL DistributedSampler
         ),
-        peft=peft,
         optim=optimizer,
-        #log=logger(args.ckpt_folder, args.max_steps // 2),
-        #resume=resume,
-    )
+        peft=None,
+    )  # https://github.com/Lightning-AI/pytorch-lightning/blob/master/src/lightning/pytorch/trainer/trainer.py#L89
 
 
 if __name__ == '__main__':
