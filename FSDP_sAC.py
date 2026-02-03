@@ -84,15 +84,14 @@ def setup():
 
     # Summary
     if is_main_process():
-        PREFIX = "%i - " % rank
-        print(PREFIX + "Master node    : %s" % master_addr)
-        print(PREFIX + "Port           : %s" % master_port)
-        print(PREFIX + "World size     : %i" % world_size)
-        print(PREFIX + "Number of nodes: %i" % n_nodes)
-        print(PREFIX + "GPUs per node  : %i" % gpus_per_node)
-        print(PREFIX + "Hostname       : %s" % socket.gethostname())
-        print(PREFIX + "Node ID        : %i" % node_id)
-        print(PREFIX + "Local rank     : %i" % local_rank)
+        print(f"{rank} - Master node    : {master_addr}")
+        print(f"{rank} - Port           : {master_port}")
+        print(f"{rank} - World size     : {world_size}")
+        print(f"{rank} - Number of nodes: {n_nodes}")
+        print(f"{rank} - GPUs per node  : {gpus_per_node}")
+        print(f"{rank} - Hostname       : {socket.gethostname()}")
+        print(f"{rank} - Node ID        : {node_id}")
+        print(f"{rank} - Local rank     : {local_rank}")
 
     return torch.device(f'cuda:{local_rank}')
 

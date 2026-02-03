@@ -94,6 +94,10 @@ def parse_args() -> Namespace:
     parser.add_argument('--seq-length', type=int, default=4096, help='Sequence length of each sample per GPU.')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs.')
 
+    # Benchmarking / debugging arguments
+    parser.add_argument('--test', action=BooleanOptionalAction, default=False, help='Run in test mode for a limited number of steps.')
+    parser.add_argument('--test-nsteps', type=int, default=100, help='Number of steps to run in test mode.')
+
     # DataLoader related arguments
     parser.add_argument('--dataset-path', type=Path, help='HuggingFaceHub dataset path.')
     parser.add_argument('--num-workers', type=int, default=4, help='Number of workers spawned by the dataloader.')
@@ -117,7 +121,7 @@ def parse_args() -> Namespace:
     parser.add_argument('--strategy', choices=['SingleDevice', 'DDP+TP+CP', 'FSDP2+TP+CP'], default='FSDP2+TP+CP', help='Training strategy.')
     parser.add_argument('--devices-per-node', type=int, default=2, help='Number of GPUs per node.')
     parser.add_argument('--num-nodes', type=int, default=1, help='Number of nodes.')
-    parser.add_argument('--dp-size', type=int, help='Data parallel size.')
+    parser.add_argument('--dp-size', type=int, default=1, help='Data parallel size.')
     parser.add_argument('--tp-size', type=int, default=1, help='Tensor parallel size.')
     parser.add_argument('--cp-size', type=int, default=1, help='Context parallel size.')
     parser.add_argument('--sequence-parallel', action=BooleanOptionalAction, default=False, help='Enable sequence parallelism (requires TP>1).')
@@ -281,7 +285,7 @@ def main() -> None:
             logger=wandb,
             callbacks=callbacks,
             max_epochs=args.epochs,
-            max_steps=100,
+            max_steps=args.test_nsteps if args.test else -1,
             log_every_n_steps=args.log_every_n_steps,
             enable_checkpointing=False,
             enable_model_summary=False,
