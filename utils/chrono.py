@@ -96,11 +96,11 @@ class TrainingChronometer:
             p90 = np.percentile(data, 90)
             p100 = np.max(data)
 
-            print(f">>> {name}: min {p0:.1f} s | 10th percentile {p10:.1f} s | median {p50:.1f} s | 90th percentile {p90:.1f} s | max {p100:.1f} s")
+            print(f">>> {name}: min {p0:.3f} s | 10th percentile {p10:.3f} s | median {p50:.3f} s | 90th percentile {p90:.3f} s | max {p100:.3f} s")
         else:
             print(f">>> {name}: insufficient data (n={len(data)})")
                 
-    def display_training_results(self, bs: int, total_batches: int, grad_acc: int) -> None:
+    def display_training_results(self, total_batches: int, grad_acc: int) -> None:
         # Sample statistics
         print(">>> Training complete in: " + str(self.training_duration))
         self.print_percentile_summary(self.time_perf_dataloading[1:], "Data loading performance time")
@@ -109,6 +109,6 @@ class TrainingChronometer:
 
         # Total training time estimation
         time_perf_train = [x + y + z for (x,y,z) in zip(self.time_perf_dataloading, self.time_perf_forward, self.time_perf_backward)]
-        self.print_percentile_summary(self.time_perf_train[1:], "Step performance time")
-        print(f'>>> Number of weight updates: {(total_batches + grad_acc - 1) // grad_acc}')
-        print(f'>>> Estimated training time of 1 epoch (bs={bs}): {np.median(self.time_perf_train[1:]) * total_batches / 3600} h')
+        self.print_percentile_summary(time_perf_train[1:], "Step performance time")
+        print(f'>>> Number of weight updates per epoch: {(total_batches + grad_acc - 1) // grad_acc}')
+        print(f'>>> Estimated training time of 1 epoch: {np.median(time_perf_train[1:]) * total_batches / 3600} h')
