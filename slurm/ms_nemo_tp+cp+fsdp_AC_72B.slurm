@@ -41,7 +41,7 @@ time srun singularity exec \
         --nproc-per-node=$SLURM_GPUS_ON_NODE \
         --rdzv_backend=c10d \
         --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
-        $WORK/test_multi_noeuds/Democratizing-LLM-FT/nemo_TPFSDP2.py \
+        $WORK/test_multi_noeuds/Democratizing-LLM-FT/nemo_TP+CP+FSDP_AC.py \
             --global-batch-size 32 \
             --batch-size 2 \
             --epochs 1 \

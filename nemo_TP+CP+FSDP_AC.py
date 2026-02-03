@@ -105,12 +105,12 @@ def parse_args() -> Namespace:
 
     # Model related arguments
     parser.add_argument('--model-path', type=Path, help='HuggingFaceHub model path.')
-    parser.add_argument('--trust-remote-code', action='store_true', help='Trust remote code for HF models.')
+    parser.add_argument('--trust-remote-code', action=BooleanOptionalAction, default=False, help='Trust remote code for HF models.')
     parser.add_argument('--attn-implementation', choices=['flash_attention_2', 'sdpa', 'eager'],
                         default='flash_attention_2', help='Attention implementation.')
-    parser.add_argument('--enable-activation-ckpt', action='store_true', help='Enable activation checkpointing.')
-    parser.add_argument('--fp8', action='store_true', help='Enable FP8 training.')
-    parser.add_argument('--liger', action='store_true', help='Enable Liger-Kernels.')
+    parser.add_argument('--activation-checkpointing', action=BooleanOptionalAction, default=False, help='Enable activation checkpointing.')
+    parser.add_argument('--fp8', action=BooleanOptionalAction, default=False, help='Enable FP8 training.')
+    parser.add_argument('--liger', action=BooleanOptionalAction, default=False, help='Enable Liger-Kernels.')
     parser.add_argument('--compile', action=BooleanOptionalAction, default=False, help='Whether or not to compile model.')
 
     # Distributed training arguments
@@ -120,8 +120,8 @@ def parse_args() -> Namespace:
     parser.add_argument('--dp-size', type=int, help='Data parallel size.')
     parser.add_argument('--tp-size', type=int, default=1, help='Tensor parallel size.')
     parser.add_argument('--cp-size', type=int, default=1, help='Context parallel size.')
-    parser.add_argument('--sequence-parallel', action='store_true', help='Enable sequence parallelism (requires TP>1).')
-    parser.add_argument('--enable-cpu-offload', action='store_true', help='Enable CPU offloading (FSDP2 only).')
+    parser.add_argument('--sequence-parallel', action=BooleanOptionalAction, default=False, help='Enable sequence parallelism (requires TP>1).')
+    parser.add_argument('--enable-cpu-offload', action=BooleanOptionalAction, default=False, help='Enable CPU offloading (FSDP2 only).')
 
     # Logging / Checkpointing arguments
     parser.add_argument('--log-every-n-steps', type=int, default=10, help='Logging frequency.')
@@ -158,7 +158,7 @@ def main() -> None:
         print(f"Gradient accumulation    : {grad_acc}")
         print(f"Mini batch size (per GPU): {args.batch_size}")
         print(f"Sequence length          : {args.seq_length}")
-        print(f"Activation checkpointing : {args.enable_activation_ckpt}")
+        print(f"Activation checkpointing : {args.activation_checkpointing}")
         print(f"Compile                  : {args.compile}")
         print(f"Attention                : {args.attn_implementation}")
         print(f"Liger-Kernels            : {args.liger}")
@@ -183,7 +183,7 @@ def main() -> None:
         trust_remote_code=args.trust_remote_code,
         attn_implementation=args.attn_implementation,
         use_liger_kernel=args.liger,
-        enable_grad_ckpt=args.enable_activation_ckpt,
+        enable_grad_ckpt=args.activation_checkpointing,
     )  # https://github.com/NVIDIA-NeMo/NeMo/blob/25.09-alpha.rc2/nemo/collections/llm/gpt/model/hf_auto_model_for_causal_lm.py
 
     ## JIT
