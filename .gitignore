@@ -1,6 +1,11 @@
 # Folders
 /dataset/
 /model/
+/.cache/
 
-__pycache__
+__pycache__/
+.ipynb_checkpoints/
 slurm_logs/
+
+# Files
+*.sif

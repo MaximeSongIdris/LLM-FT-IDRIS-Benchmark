@@ -200,7 +200,7 @@ def main():
 
 
     # 4. Data processing
-    train_dataset = load_dataset(str(args.dataset_path), split="train[:20%]")
+    train_dataset = load_dataset(str(args.dataset_path), split="train")
     collate_fn = make_sft_collate(tokenizer, max_seq_length=args.seq_length)
 
     sampler = DistributedSampler(
