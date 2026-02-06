@@ -159,16 +159,7 @@ def main():
 
     if is_main_process(): print(f"Time to load the model (bf16) and its tokenizer: {chrono.timer(start=False):.3f} s")
 
-    ## sAC
-    if args.selective_activation_checkpointing:
-        model.config.use_cache = False  # deactivate KV caching (conflicts with activation checkpointing)
-        BlockCls = type(model.model.layers[0])
-        if is_main_process(): print(BlockCls)
-        apply_fsdp_checkpointing(model, BlockCls, args.selective_activation_checkpointing)
-
     ## FSDP
-    if is_main_process(): chrono.timer(start=True)
-
     fsdp_kwargs = {
         "mp_policy": MixedPrecisionPolicy(
             param_dtype=torch.bfloat16,
@@ -177,10 +168,19 @@ def main():
     }
 
     for layer in model.model.layers:
-        fully_shard(layer.type(torch.float32), **fsdp_kwargs)
-    fully_shard(model.type(torch.float32), **fsdp_kwargs)
+        fully_shard(layer, **fsdp_kwargs)
+    fully_shard(model, **fsdp_kwargs)
 
     if is_main_process(): print(f"Time to shard the model: {chrono.timer(start=False):.3f} s")
+
+    ## sAC for FSDP
+    if args.selective_activation_checkpointing:
+        model.config.use_cache = False  # deactivate KV caching (conflicts with activation checkpointing)
+        BlockCls = type(model.model.layers[0])
+        if is_main_process(): print(BlockCls)
+        apply_fsdp_checkpointing(model, BlockCls, args.selective_activation_checkpointing)
+
+    if is_main_process(): print(f"Time for Selective activation checkpointing: {chrono.timer(start=False):.3f} s")
 
     ## Transfer to GPU
     model = model.to(device)
