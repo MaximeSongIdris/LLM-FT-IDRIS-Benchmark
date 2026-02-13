@@ -152,12 +152,12 @@ def main():
     # 3. Model processing
 
     ## bf16 model
-    if is_main_process(): chrono.timer(start=True)
+    if is_main_process(): chrono.cpu_timer(start=True)
 
     model = AutoModelForCausalLM.from_pretrained(args.model_path, torch_dtype="bfloat16", trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, padding_side="left", use_fast=True)
 
-    if is_main_process(): print(f"Time to load the model (bf16) and its tokenizer: {chrono.timer(start=False):.3f} s")
+    if is_main_process(): print(f"Time to load the model (bf16) and its tokenizer: {chrono.cpu_timer(start=False):.3f} s")
 
     ## FSDP
     fsdp_kwargs = {
@@ -171,7 +171,7 @@ def main():
         fully_shard(layer, **fsdp_kwargs)
     fully_shard(model, **fsdp_kwargs)
 
-    if is_main_process(): print(f"Time to shard the model: {chrono.timer(start=False):.3f} s")
+    if is_main_process(): print(f"Time to shard the model: {chrono.cpu_timer(start=False):.3f} s")
 
     ## sAC for FSDP
     if args.selective_activation_checkpointing:
@@ -180,18 +180,17 @@ def main():
         if is_main_process(): print(BlockCls)
         apply_fsdp_checkpointing(model, BlockCls, args.selective_activation_checkpointing)
 
-    if is_main_process(): print(f"Time for Selective activation checkpointing: {chrono.timer(start=False):.3f} s")
+    if is_main_process(): print(f"Time for Selective activation checkpointing: {chrono.cpu_timer(start=False):.3f} s")
 
     ## Transfer to GPU
     model = model.to(device)
+    torch.cuda.synchronize()  # wait for the end of the gpu op
 
-    if is_main_process(): print(f"Time to transfer the model to GPU: {chrono.timer(start=False):.3f} s")
+    if is_main_process(): print(f"Time to transfer the model to GPU: {chrono.cpu_timer(start=False):.3f} s")
 
     ## JIT
     if args.compile:
         model = torch.compile(model)
-
-        if is_main_process(): print(f"Time for torch.compile: {chrono.timer(start=False):.3f} s")
 
     if is_main_process():
         print(f"Model: {model}")
@@ -200,6 +199,8 @@ def main():
 
 
     # 4. Data processing
+    if is_main_process(): chrono.cpu_timer(start=True)
+
     train_dataset = load_dataset(str(args.dataset_path), split="train")
     collate_fn = make_sft_collate(tokenizer, max_seq_length=args.seq_length)
 
@@ -221,7 +222,7 @@ def main():
         shuffle=False
     )
 
-    if is_main_process(): print(f"Time to load dataset and initialize dataloader: {chrono.timer(start=False):.3f} s")
+    if is_main_process(): print(f"Time to load dataset and initialize dataloader: {chrono.cpu_timer(start=False):.3f} s")
 
 
     # 5. Training preparation
@@ -261,26 +262,45 @@ def main():
 
 
     # 6. Training loop
-    if is_main_process():
-        chrono.track_training_time(start=True)
+
+    ## Few steps forward for WARM-UP
+    dist.barrier()  # Wait for all CPUs and GPUs to be synchronized before continuing
+
+    warmup_iter = iter(dataloader)
+    for i in range(10):  # track the first few steps duration
+        if is_main_process(): chrono.cpu_timer(start=True)
+        
+        input_ids, labels, attention_mask = next(warmup_iter)
+        input_ids = input_ids.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+        attention_mask = attention_mask.to(device, non_blocking=True)
+
+        with torch.no_grad():
+            local_logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
+
+        dist.barrier()  # Wait for all CPUs and GPUs to be synchronized before continuing
+        if is_main_process():
+            print(f"Warm-up step {i+1} (may include torch.compile tracing, optimization and compilation): {chrono.cpu_timer(start=False):.3f} s")
+
+    ## Real training
+    dist.barrier()  # Wait for all CPUs and GPUs to be synchronized before continuing
+    if is_main_process():chrono.track_cpu_training_time(start=True)
 
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)  # set epoch for a sampler
 
-        if is_main_process():
-            chrono.timer(start=True)  # track the first step duration
-            chrono.track_dataloading_step_time(start=True)
-
         for i, (input_ids, labels, attention_mask) in enumerate(dataloader, start=1):
             if args.test and i > args.test_nsteps * args.grad_acc: break
 
+            if is_main_process(): chrono.track_gpu_HtoD_step_time(start=True)
+            
             input_ids = input_ids.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             attention_mask = attention_mask.to(device, non_blocking=True)
 
             if is_main_process():
-                chrono.track_dataloading_step_time(start=False)
-                chrono.track_forward_step_time(start=True)
+                chrono.track_gpu_HtoD_step_time(start=False)
+                chrono.track_gpu_fwd_step_time(start=True)
 
             # Forward
             local_logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
@@ -293,8 +313,8 @@ def main():
             perplexity.update(local_logits, labels)
 
             if is_main_process():
-                chrono.track_forward_step_time(start=False)
-                chrono.track_backward_step_time(start=True)
+                chrono.track_gpu_fwd_step_time(start=False)
+                chrono.track_gpu_bwd_step_time(start=True)
 
             local_loss.backward()  # gradients are automatically divided by world_size: https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/_runtime_utils.py#L831
 
@@ -305,8 +325,7 @@ def main():
                 optimizer.zero_grad()
 
             if is_main_process():
-                chrono.track_backward_step_time(start=False)
-                chrono.track_dataloading_step_time(start=True)
+                chrono.track_gpu_bwd_step_time(start=False)
 
             # Log training info
             step = ( (i-1) // args.grad_acc) + 1
@@ -316,10 +335,6 @@ def main():
                 last_lr = lr_scheduler.get_last_lr()[0]
                 if is_main_process():
                     print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else len(dataloader) // args.grad_acc} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
-
-            if i == 1 and is_main_process():
-                print(f"Time to first step (may include torch.compile tracing): {chrono.timer(start=False):.3f} s")
-
 
         # Checkpointing by rank 0
         if not args.test and is_main_process():
@@ -337,7 +352,7 @@ def main():
     dist.barrier()
 
     if is_main_process():
-        chrono.track_training_time(start=False)
+        chrono.track_cpu_training_time(start=False)
         chrono.display_training_results(len(dataloader), args.grad_acc)
 
         memory_usage()

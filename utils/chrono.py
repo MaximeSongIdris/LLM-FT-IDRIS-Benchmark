@@ -1,9 +1,17 @@
-from datetime import datetime
 from time import time
 import numpy as np
+import torch
 
 
 class TrainingChronometer:
+    """
+    Tracks training performance using CUDA Events for accurate GPU timing.
+    
+    Measures three phases per training step: Host-to-Device transfer,
+    forward pass, and backward pass. Uses CUDA Events instead of CPU 
+    wall-clock timers to accurately measure GPU execution time despite 
+    the asynchronous nature of CUDA operations.
+    """
     def __init__(self) -> None:
         self._reset_state()
 
@@ -11,82 +19,77 @@ class TrainingChronometer:
         self._reset_state()
 
     def _reset_state(self) -> None:
-        self.training_duration = None
-        self.time_perf_dataloading = []
-        self.time_perf_forward = []
-        self.time_perf_backward = []
-        
-        self.saved_time = None
+        """Reset all timers and recorded events."""
+        # CPU Timer
+        self.saved_cpu_time = None
         self.start_training_time = None
-        self.start_dataloading_time = None
-        self.start_forward_time = None
-        self.start_backward_time = None
-    
-    def timer(self, start: bool=True) -> None | float:
-        """Start or stop a simple wall-clock timer.
+        self.end_training_time = None
 
-        When `start` is True, records the current time as the reference.
-        When `start` is False, returns the elapsed time since the last reference
-        and updates the reference to the current time.
+        # GPU Timer
+        self.start_HtoD = []
+        self.end_HtoD = []
+        self.start_fwd = []
+        self.end_fwd = []
+        self.start_bwd = []
+        self.end_bwd = []
+    
+    def cpu_timer(self, start: bool=True) -> None | float:
+        """Start or stop a simple CPU wall-clock timer.
+
+        Args:
+            start: If True, records the current time as reference.
+                   If False, returns elapsed time (in seconds) since last 
+                   reference and updates the reference.
         """
         if start:
-            self.saved_time = time()
+            self.saved_cpu_time = time()
         else:
-            if self.saved_time is None:
+            if self.saved_cpu_time is None:
                 raise RuntimeError("Timer was not started. Call timer(start=True) first.")
             else:
-                previous_time = self.saved_time
-                self.saved_time = time()
-                return self.saved_time - previous_time
+                previous_time = self.saved_cpu_time
+                self.saved_cpu_time = time()
+                return self.saved_cpu_time - previous_time
         
-    def track_training_time(self, start: bool=True) -> None | float:
-        """Start or stop a wall-clock training timer."""
+    def track_cpu_training_time(self, start: bool=True) -> None:
+        """Start or stop the CPU wall-clock timer of the full training run."""
         if start:
-            self.start_training_time = datetime.now()
+            self.start_training_time = time()
         else:
-            if self.start_training_time is None:
-                raise RuntimeError("Training timer was not started. Call track_training_time(start=True) first.")
-            else:
-                self.training_duration = datetime.now() - self.start_training_time
-                self.start_training_time = None
-            
-    def track_dataloading_step_time(self, start: bool=True) -> None | float:
-        """Start or stop a wall-clock data loading timer."""
+            self.end_training_time = time()
+
+    def track_gpu_HtoD_step_time(self, start: bool=True) -> None:
+        """Record a CUDA Event marking the start or end of a Host-to-Device transfer."""
+        gpu_timer = torch.cuda.Event(enable_timing=True)
+        gpu_timer.record()
         if start:
-            self.start_dataloading_time = time()
+            self.start_HtoD.append(gpu_timer)
         else:
-            if self.start_dataloading_time is None:
-                raise RuntimeError("Dataloading timer was not started. Call track_dataloading_step_time(start=True) first.")
-            else:
-                self.time_perf_dataloading.append(time() - self.start_dataloading_time)
-                self.start_dataloading_time = None
+            self.end_HtoD.append(gpu_timer)
                 
-    def track_forward_step_time(self, start: bool=True) -> None | float:
-        """Start or stop a wall-clock forward pass timer."""
+    def track_gpu_fwd_step_time(self, start: bool=True) -> None:
+        """Record a CUDA Event marking the start or end of a forward pass."""
+        gpu_timer = torch.cuda.Event(enable_timing=True)
+        gpu_timer.record()
         if start:
-            self.start_forward_time = time()
+            self.start_fwd.append(gpu_timer)
         else:
-            if self.start_forward_time is None:
-                raise RuntimeError("Forward timer was not started. Call track_forward_step_time(start=True) first.")
-            else:
-                self.time_perf_forward.append(time() - self.start_forward_time)
-                self.start_forward_time = None
+            self.end_fwd.append(gpu_timer)
                 
-    def track_backward_step_time(self, start: bool=True) -> None | float:
-        """Start or stop a wall-clock backward pass timer."""
+    def track_gpu_bwd_step_time(self, start: bool=True) -> None:
+        """Record a CUDA Event marking the start or end of a backward pass."""
+        gpu_timer = torch.cuda.Event(enable_timing=True)
+        gpu_timer.record()
         if start:
-            self.start_backward_time = time()
+            self.start_bwd.append(gpu_timer)
         else:
-            if self.start_backward_time is None:
-                raise RuntimeError("Backward timer was not started. Call track_backward_step_time(start=True) first.")
-            else:                
-                self.time_perf_backward.append(time() - self.start_backward_time)
-                self.start_backward_time = None
+            self.end_bwd.append(gpu_timer)
 
     def print_percentile_summary(self, data: list, name: str) -> None:
-        """Helper function to display sample statistics.
+        """Display distribution statistics for a list of timing measurements.
         
-        Shows the variability in the actual measurements using percentiles.
+        Uses percentiles (min, p10, median, p90, max) to show the variability of the measurements.
+        Requires at least 10 data points.
         """
         if len(data) >= 10:
             # Use percentiles since it works for any distribution
@@ -101,14 +104,23 @@ class TrainingChronometer:
             print(f">>> {name}: insufficient data (n={len(data)})")
                 
     def display_training_results(self, total_batches: int, grad_acc: int) -> None:
-        # Sample statistics
-        print(">>> Training complete in: " + str(self.training_duration))
-        self.print_percentile_summary(self.time_perf_dataloading[1:], "Data loading performance time")
-        self.print_percentile_summary(self.time_perf_forward[1:], "Forward pass performance time")
-        self.print_percentile_summary(self.time_perf_backward[1:], "Backward pass performance time")
+        """Print a summary of training performance."""
+        # Should be executed at the end of training. This ensures that GPU stopped working.
+        torch.cuda.synchronize()
+
+        # Compute time performance in seconds
+        time_perf_HtoD = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_HtoD, self.end_HtoD)]
+        time_perf_fwd = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_fwd, self.end_fwd)]
+        time_perf_bwd = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_bwd, self.end_bwd)]
+        
+        # Step statistics
+        print(">>> Training complete in: " + str(self.end_training_time - self.start_training_time))
+        self.print_percentile_summary(time_perf_HtoD, "Host to Device performance time")
+        self.print_percentile_summary(time_perf_fwd, "Forward pass performance time")
+        self.print_percentile_summary(time_perf_bwd, "Backward pass performance time")
 
         # Total training time estimation
-        time_perf_train = [x + y + z for (x,y,z) in zip(self.time_perf_dataloading, self.time_perf_forward, self.time_perf_backward)]
-        self.print_percentile_summary(time_perf_train[1:], "Step performance time")
+        time_perf_step = [x + y + z for (x,y,z) in zip(time_perf_HtoD, time_perf_fwd, time_perf_bwd)]
+        self.print_percentile_summary(time_perf_step, "Step performance time")
         print(f'>>> Number of weight updates per epoch: {(total_batches + grad_acc - 1) // grad_acc}')
-        print(f'>>> Estimated training time of 1 epoch: {np.median(time_perf_train[1:]) * total_batches / 3600} h')
+        print(f'>>> Estimated training time of 1 epoch: {np.median(time_perf_step) * total_batches / 3600} h')
