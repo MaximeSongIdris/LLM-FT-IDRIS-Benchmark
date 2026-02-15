@@ -298,7 +298,7 @@ def main():
             labels = labels.to(device, non_blocking=True)
             attention_mask = attention_mask.to(device, non_blocking=True)
 
-            if is_main_process():
+            if is_main_process():  # work only if it is on the same stream as data transfer
                 chrono.track_gpu_HtoD_step_time(start=False)
                 chrono.track_gpu_fwd_step_time(start=True)
 
@@ -306,16 +306,16 @@ def main():
             local_logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
             bs, seq_len, vocab_size = local_logits.shape
             local_loss: torch.Tensor = criterion(local_logits.view(bs * seq_len, vocab_size), labels.view(bs * seq_len))
-            local_loss /= args.grad_acc  # take into account gradient accumulation impact
 
             # Global metrics
-            avg_loss.update(local_loss)
-            perplexity.update(local_logits, labels)
+            avg_loss.update(local_loss.detach())
+            perplexity.update(local_logits.detach(), labels)
 
             if is_main_process():
                 chrono.track_gpu_fwd_step_time(start=False)
                 chrono.track_gpu_bwd_step_time(start=True)
 
+            local_loss /= args.grad_acc  # take into account gradient accumulation impact
             local_loss.backward()  # gradients are automatically divided by world_size: https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/_runtime_utils.py#L831
 
             if i % args.grad_acc == 0:
@@ -337,10 +337,7 @@ def main():
                     print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else len(dataloader) // args.grad_acc} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
 
         # Checkpointing by rank 0
-        if not args.test and is_main_process():
-            checkpoint_name = f"checkpoint/model_state_dict_{os.environ.get('SLURM_JOB_ID', 'XXX')}_epoch{epoch}.pt"
-
-            print(f"Model Checkpointing - Building the {checkpoint_name} file")
+        if not args.test:
             model_state_dict = get_model_state_dict(
                 model=model,
                 options=StateDictOptions(
@@ -348,7 +345,10 @@ def main():
                     cpu_offload=True,
                 )
             )
-            torch.save(model_state_dict, checkpoint_name)
+            if is_main_process():
+                checkpoint_name = f"checkpoint/model_state_dict_{os.environ.get('SLURM_JOB_ID', 'XXX')}_epoch{epoch}.pt"
+                print(f"Model Checkpointing - Building the {checkpoint_name} file")
+                torch.save(model_state_dict, checkpoint_name)
     dist.barrier()
 
     if is_main_process():
