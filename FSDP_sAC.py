@@ -11,6 +11,7 @@ from datasets import load_dataset
 from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
 from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
 from torch.nn import CrossEntropyLoss
+from torch.profiler import profile, tensorboard_trace_handler, ProfilerActivity, schedule, record_function
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import SequentialLR, CosineAnnealingLR, LinearLR
 from torch.utils.data import DataLoader
@@ -101,29 +102,30 @@ def parse_args() -> Namespace:
 
     # Training related arguments
     parser.add_argument('--batch-size', type=int, default=1, help='Batch size per GPU.')
-    parser.add_argument("--seq-length", type=int, default=4096, help='Sequence length of each sample per GPU.')
+    parser.add_argument('--seq-length', type=int, default=4096, help='Sequence length of each sample per GPU.')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs.')
     parser.add_argument('--grad-acc', type=int, default=1, help='Number of batches used for a single weights update.')
 
     # Benchmarking / debugging arguments
     parser.add_argument('--test', action=BooleanOptionalAction, default=False, help='Run in test mode for a limited number of steps.')
     parser.add_argument('--test-nsteps', type=int, default=100, help='Number of steps to run in test mode.')
-    parser.add_argument("--display-optimizer-dtype", action=BooleanOptionalAction, default=False, help="Print precision of optimizer state tensors.")
+    parser.add_argument('--display-optimizer-dtype', action=BooleanOptionalAction, default=False, help='Print precision of optimizer state tensors.')
+    parser.add_argument('--pytorch-profiler', action=BooleanOptionalAction, default=False, help='Whether to use pytorch profiler.')
 
     # DataLoader related arguments
-    parser.add_argument('--dataset-path', type=Path, help="HuggingFaceHub dataset path.")
+    parser.add_argument('--dataset-path', type=Path, help='HuggingFaceHub dataset path.')
     parser.add_argument('--num-workers', type=int, default=4, help='Number of workers spawned by the dataloader.')
     parser.add_argument('--prefetch-factor', type=int, default=2, help='Number of batches loaded in RAM per worker.')
 
     # Optimizer AdamW related arguments
-    parser.add_argument("--lr-warmup-ratio", type=float, default=0.1, help="Fraction of training steps for linear LR warmup (0.1 = 10%).")
-    parser.add_argument("--learning-rate", type=float, default=1e-5, help="Learning rate for AdamW.")
-    parser.add_argument("--weight-decay", type=float, default=0.1, help="Weight decay for AdamW.")
+    parser.add_argument('--lr-warmup-ratio', type=float, default=0.1, help='Fraction of training steps for linear LR warmup (0.1 = 10%).')
+    parser.add_argument('--learning-rate', type=float, default=1e-5, help='Learning rate for AdamW.')
+    parser.add_argument('--weight-decay', type=float, default=0.1, help='Weight decay for AdamW.')
 
     # Model related arguments
-    parser.add_argument("--model-path", type=Path, help="HuggingFaceHub model path.")
-    parser.add_argument("--selective-activation-checkpointing", type=str, default=None, help='For a given ac ratio p, we should essentially apply ac on every "1/p" blocks.')
-    parser.add_argument("--compile", action=BooleanOptionalAction, default=False, help="Whether or not to compile model.")
+    parser.add_argument('--model-path', type=Path, help='HuggingFaceHub model path.')
+    parser.add_argument('--selective-activation-checkpointing', type=str, default=None, help='For a given ac ratio p, we should essentially apply ac on every "1/p" blocks.')
+    parser.add_argument('--compile', action=BooleanOptionalAction, default=False, help='Whether or not to compile model.')
 
     return parser.parse_args()
 
@@ -267,7 +269,7 @@ def main():
     dist.barrier()  # Wait for all CPUs and GPUs to be synchronized before continuing
 
     warmup_iter = iter(dataloader)
-    for i in range(10):  # track the first few steps duration
+    for i in range(5):  # track the first few steps duration
         if is_main_process(): chrono.cpu_timer(start=True)
         
         input_ids, labels, attention_mask = next(warmup_iter)
@@ -283,8 +285,21 @@ def main():
             print(f"Warm-up step {i+1} (may include torch.compile tracing, optimization and compilation): {chrono.cpu_timer(start=False):.3f} s")
 
     ## Real training
+    if is_main_process():  # Only profile on the main process
+        if args.pytorch_profiler:
+            prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                schedule=schedule(wait=1, warmup=1, active=8, repeat=1),
+                on_trace_ready=tensorboard_trace_handler(f"./profile/"),
+                profile_memory=True,
+                record_shapes=True)
+        else:
+            prof = profile(activities=[])
+    
     dist.barrier()  # Wait for all CPUs and GPUs to be synchronized before continuing
-    if is_main_process():chrono.track_cpu_training_time(start=True)
+    if is_main_process():
+        chrono.track_cpu_training_time(start=True)
+
+        prof.start()
 
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)  # set epoch for a sampler
@@ -293,19 +308,22 @@ def main():
             if args.test and i > args.test_nsteps * args.grad_acc: break
 
             if is_main_process(): chrono.track_gpu_HtoD_step_time(start=True)
-            
-            input_ids = input_ids.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-            attention_mask = attention_mask.to(device, non_blocking=True)
+
+            # Data Transfer
+            with record_function("HtoD"):
+                input_ids = input_ids.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+                attention_mask = attention_mask.to(device, non_blocking=True)
 
             if is_main_process():  # work only if it is on the same stream as data transfer
                 chrono.track_gpu_HtoD_step_time(start=False)
                 chrono.track_gpu_fwd_step_time(start=True)
 
             # Forward
-            local_logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
-            bs, seq_len, vocab_size = local_logits.shape
-            local_loss: torch.Tensor = criterion(local_logits.view(bs * seq_len, vocab_size), labels.view(bs * seq_len))
+            with record_function("Forward"):
+                local_logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
+                bs, seq_len, vocab_size = local_logits.shape
+                local_loss: torch.Tensor = criterion(local_logits.view(bs * seq_len, vocab_size), labels.view(bs * seq_len))
 
             # Global metrics
             avg_loss.update(local_loss.detach())
@@ -315,14 +333,16 @@ def main():
                 chrono.track_gpu_fwd_step_time(start=False)
                 chrono.track_gpu_bwd_step_time(start=True)
 
-            local_loss /= args.grad_acc  # take into account gradient accumulation impact
-            local_loss.backward()  # gradients are automatically divided by world_size: https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/_runtime_utils.py#L831
+            with record_function("Backward"):
+                local_loss /= args.grad_acc  # take into account gradient accumulation impact
+                local_loss.backward()  # gradients are automatically divided by world_size: https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/_runtime_utils.py#L831
 
-            if i % args.grad_acc == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
+            with record_function("Optimizer"):
+                if i % args.grad_acc == 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
 
             if is_main_process():
                 chrono.track_gpu_bwd_step_time(start=False)
@@ -335,6 +355,9 @@ def main():
                 last_lr = lr_scheduler.get_last_lr()[0]
                 if is_main_process():
                     print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else len(dataloader) // args.grad_acc} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
+
+            if is_main_process():
+                prof.step()
 
         # Checkpointing by rank 0
         if not args.test:
@@ -349,9 +372,11 @@ def main():
                 checkpoint_name = f"checkpoint/model_state_dict_{os.environ.get('SLURM_JOB_ID', 'XXX')}_epoch{epoch}.pt"
                 print(f"Model Checkpointing - Building the {checkpoint_name} file")
                 torch.save(model_state_dict, checkpoint_name)
-    dist.barrier()
+    dist.barrier()  # Wait for all CPUs and GPUs to be synchronized before continuing
 
     if is_main_process():
+        prof.stop()
+
         chrono.track_cpu_training_time(start=False)
         chrono.display_training_results(len(dataloader), args.grad_acc)
 
