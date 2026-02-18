@@ -8,12 +8,12 @@
 
 #### Required AC and GA for multi-gpus training with fixed batch size per GPU (effective batch size = 64)
 
-|         | bs=1          | bs=2           | bs=4          | bs=8          |
-|---------|---------------|----------------|---------------|---------------|
-| GPUs=1  | AC=0.4, GA=64 | AC=0.85, GA=32 | -             | -             |
-| GPUs=4  | -             | AC=0.0, GA=8   | AC=0.4, GA=4  | AC=0.95, GA=2 |
-| GPUs=8  | -             | AC=0.0, GA=4   | AC=0.45, GA=2 | AC=0.85, GA=1 |
-| GPUs=16 | -             | AC=0.0, GA=2   | AC=0.4, GA=1  | -             |
+|         | bs=1          | bs=2           | bs=4         | bs=8          |
+|---------|---------------|----------------|--------------|---------------|
+| GPUs=1  | AC=0.4, GA=64 | AC=0.85, GA=32 | -            | -             |
+| GPUs=4  | -             | AC=0.0, GA=8   | AC=0.5, GA=4 | AC=0.95, GA=2 |
+| GPUs=8  | -             | AC=0.0, GA=4   | AC=0.5, GA=2 | AC=0.90, GA=1 |
+| GPUs=16 | -             | AC=0.0, GA=2   | AC=0.4, GA=1 | -             |
 
 - **AC** (Activation Checkpointing): ratio of activation layers that are not in memory (0.0 = all in memory, 1.0 = nothing in memory). Trades compute for memory.
 - **GA** (Gradient Accumulation): number of forward/backward passes before optimizer step. Trades compute for memory.
