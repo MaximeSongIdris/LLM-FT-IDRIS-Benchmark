@@ -8,6 +8,7 @@ __pycache__/
 slurm_logs/
 profile/
 nsight_report/
+ncu_report/
 
 # Files
 *.sif

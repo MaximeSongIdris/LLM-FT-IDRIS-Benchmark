@@ -19,15 +19,22 @@
 - **GA** (Gradient Accumulation): number of forward/backward passes before optimizer step. Trades compute for memory.
 - **Effective batch size** = GPUs × bs × GA = 64 for all configurations
 
+#### Training time depending on the number of GPUs and on the effect of Selective Activation Checkpointing
+
 <img src="asset/training_time_vs_activation_ckpt.png" width="800">
 
-#### Cost of Gradient Accumulation (bs=4, GA=2)
+By increasing the bs thanks to the selective activation checkpointing, we expected to speed-up the training as we reduce the costly gradient accumulation. Furthermore, since we are doing less forwards/backwards in total, it should be further speed-up as we reduce the number of communication. However as soon as we use FSDP2 (multi-gpus training), AC starts actually increasing the training time. Why ?
 
-With GA=2, we perform 2 forward+backward on bs=4 passes before 1 optimizer step.
+#### Analysis on a single GPU with effective batch size = 4
 
-#### Cost of Activation Checkpointing (bs=8, GA=1)
-
-With GA=1 and activation checkpointing, we perform 1 forward+backward on bs=8, plus a recompute cost of at most 1 additional forward on bs=8.
+- With GA=4, we perform 4 forward+backward on bs=1 passes before 1 optimizer step.
+- With GA=2 and activation checkpointing, we perform 2 forward+backward on bs=2, plus a recompute cost of at most 2 additional forwards on bs=2.
+- In theory, forward/backward on bs=2 should be more efficient than 2 forward/backward on bs=1 as we use more efficiently the GPU (parallelizing on the dimension of the batch) and reduce the overhead of launching multiple kernels.
+- In practice, when looking at the forward, the time actually increased almost linearly on the bs ([trace for bs=1](asset/forward_bs1.png) / [trace for bs=2](asset/forward_bs2.png)), passing from **138 ms** to **258 ms**. If we zoom at the forward, it is made of the forward of **28 attention layers** with each attention layer forward scaling linearly. Inside of these attention layer forward, we have 4 big kernels that dominate and among them, the biggest kernel scales from **1,123 ms** to **2,224 ms** ([trace for bs=1](asset/forward_attention_layer_bs1.png) / [trace for bs=2](asset/forward_attention_layer_bs2.png)).
+- In bs=1 and bs=2, the kernel configuration is identical: 132 blocks and 384 threads per block, which means that we are actually asking for each thread to work twice as much ( twice the data transfer and twice the computation).
+- Since we have 1 block per SM (132 SM in H100) and 4 schedulers per SM, and each scheduler deals by group of 32 threads. Each scheduler has 3 groups.
+- By using Nsight compute, we can see that the average scheduler executed 530 524 instructions for bs=1 and 1 060 689 instructions for bs=2. Thus we can infer that each group of threads is dealing with twice the work by doing it sequentially.
+- In Nsight compute, with bs=1, the Tensor Core is only active 31% of cycles and memory throughput reaches 60%. This suggests spare capacity exists. In theory, bs=2 instructions could fill the idle cycles by interleaving batch 0 and batch 1 operations within each warp. However, this interleaving would require storing two independent working contexts simultaneously in registers, which is limited. The bottleneck here may be due to the on-chip memory (we could try to verify by looking at the warp lifecycle and monitor the pipe usage and register usage).
 
 ## Sources
 
