@@ -37,7 +37,6 @@ time srun singularity exec \
     $SINGULARITY_ALLOWED_DIR/nemo_2509.sif \
     nsys profile \
         --trace osrt,cuda,cublas,cudnn,nvtx \
-        --gpu-metrics-device=all \
         --capture-range cudaProfilerApi \
         --output nsight_report/profile_rank_%q{SLURM_PROCID} \
         --force-overwrite true \

@@ -4,7 +4,7 @@
 
 ## Experience
 
-### 1) FSDP2 + Selective Activation Checkpointing on H100 80 Go
+### 1) FSDP2 + Selective Activation Checkpointing on H100 80 Go (Qwen2.5-7B-Instruct)
 
 #### Required AC and GA for multi-gpus training with fixed batch size per GPU (effective batch size = 64)
 
@@ -25,7 +25,7 @@
 
 By increasing the bs thanks to the selective activation checkpointing, we expected to speed-up the training as we reduce the costly gradient accumulation. Furthermore, since we are doing less forwards/backwards in total, it should be further speed-up as we reduce the number of communication. However as soon as we use FSDP2 (multi-gpus training), AC starts actually increasing the training time. Why ?
 
-#### Analysis on a single GPU with effective batch size = 4
+#### Analysis on 4 GPUs with effective batch size = 4
 
 - With GA=4, we perform 4 forward+backward on bs=1 passes before 1 optimizer step.
 - With GA=2 and activation checkpointing, we perform 2 forward+backward on bs=2, plus a recompute cost of at most 2 additional forwards on bs=2.
@@ -36,8 +36,13 @@ By increasing the bs thanks to the selective activation checkpointing, we expect
 - By using Nsight compute, we can see that the average scheduler executed 530 524 instructions for bs=1 and 1 060 689 instructions for bs=2. Thus we can infer that each group of threads is dealing with twice the work by doing it sequentially.
 - In Nsight compute, with bs=1, the Tensor Core is only active 31% of cycles and memory throughput reaches 60%. This suggests spare capacity exists. In theory, bs=2 instructions could fill the idle cycles by interleaving batch 0 and batch 1 operations within each warp. However, this interleaving would require storing two independent working contexts simultaneously in registers, which is limited. The bottleneck here may be due to the on-chip memory (we could try to verify by looking at the warp lifecycle and monitor the pipe usage and register usage).
 
+### Issues
+
+- I tried to monitor the GPU by capturing the trace via Nsight system (`nsys profile --trace osrt,cuda,cublas,cudnn,nvtx`), but I couldn't get the detailed GPU view, instead I've got only the CPU view and the Process view (which has some GPU metrics).
+
 ## Sources
 
 - Original code: https://github.com/BertrandCabotPro/Democratizing-LLM-FT
 - Source for FSDP + Selective activation checkpointing: https://pytorch.org/blog/maximizing-training/
 - SLURM configuration for NeMo: https://docs.nvidia.com/nemo/automodel/latest/launcher/cluster.html
+- Nvidia GPU guide: https://modal.com/gpu-glossary
