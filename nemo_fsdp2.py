@@ -1,10 +1,14 @@
 #!/usr/bin/python3
-"""SFT training script with FSDP2/Megatron strategies for multi-node distributed training.
+"""SFT training script using HFAutoModelForCausalLM with FSDP2 strategy.
+
+Supports SingleDevice and FSDP2+TP+CP strategies for distributed training.
+For Megatron-native training (DDP+TP+CP), see nemo_megatron.py.
 
 Source: https://docs.nvidia.com/nemo-framework/user-guide/25.04/automodel/sft.html
 """
 
 from argparse import ArgumentParser, BooleanOptionalAction, Namespace
+from math import ceil
 from pathlib import Path
 import os
 
@@ -51,37 +55,29 @@ def create_strategy(
 
     if strategy_name == 'SingleDevice':
         return pl.strategies.SingleDeviceStrategy(device='cuda:0', checkpoint_io=checkpoint_io)
-    else:
+
+    elif strategy_name == 'FSDP2+TP+CP':
         total_devices = devices_per_node * num_nodes
         expected = dp_size * tp_size * cp_size
         assert expected == total_devices, (f"DP*TP*CP = {expected} must equal devices*num_nodes = {total_devices}")
+        
+        if rank == 0:
+            print(f"Using FSDP2Strategy (FSDP2+TP+CP) with DP={dp_size}, TP={tp_size}, CP={cp_size}")
+        return nl.FSDP2Strategy(
+            data_parallel_size=dp_size,
+            tensor_parallel_size=tp_size,
+            use_hf_tp_plan=True,
+            sequence_parallel=sequence_parallel,
+            context_parallel_size=cp_size,
+            offload_policy=_get_offload_policy(enable_cpu_offload),
+            checkpoint_io=checkpoint_io,
+        )
 
-        if strategy_name == 'DDP+TP+CP':
-            if rank == 0:
-                print(f"Using MegatronStrategy (DDP+TP+CP) with DP={dp_size}, TP={tp_size}, CP={cp_size}")
-            return nl.MegatronStrategy(
-                ddp="megatron",
-                find_unused_parameters=True,
-                tensor_model_parallel_size=tp_size,
-                sequence_parallel=sequence_parallel,
-                context_parallel_size=cp_size,
-                checkpoint_io=checkpoint_io,
-            )
-
-        elif strategy_name == 'FSDP2+TP+CP':
-            if rank == 0:
-                print(f"Using FSDP2Strategy (FSDP2+TP+CP) with DP={dp_size}, TP={tp_size}, CP={cp_size}")
-            return nl.FSDP2Strategy(
-                data_parallel_size=dp_size,
-                tensor_parallel_size=tp_size,
-                use_hf_tp_plan=True,
-                sequence_parallel=sequence_parallel,
-                context_parallel_size=cp_size,
-                offload_policy=_get_offload_policy(enable_cpu_offload),
-                checkpoint_io=checkpoint_io,
-            )
-
-        raise ValueError(f"Unknown strategy: {strategy_name}")
+    raise ValueError(
+        f"Unknown strategy: {strategy_name}. "
+        f"This script supports 'SingleDevice' and 'FSDP2+TP+CP'. "
+        f"For MegatronStrategy (DDP+TP+CP), use nemo_megatron.py."
+    )
 
 
 def parse_args() -> Namespace:
@@ -118,8 +114,8 @@ def parse_args() -> Namespace:
     parser.add_argument('--compile', action=BooleanOptionalAction, default=False, help='Whether or not to compile model.')
 
     # Distributed training arguments
-    parser.add_argument('--strategy', choices=['SingleDevice', 'DDP+TP+CP', 'FSDP2+TP+CP'], default='FSDP2+TP+CP', help='Training strategy.')
-    parser.add_argument('--devices-per-node', type=int, default=2, help='Number of GPUs per node.')
+    parser.add_argument('--strategy', choices=['SingleDevice', 'FSDP2+TP+CP'], default='SingleDevice', help='Training strategy.')
+    parser.add_argument('--devices-per-node', type=int, default=1, help='Number of GPUs per node.')
     parser.add_argument('--num-nodes', type=int, default=1, help='Number of nodes.')
     parser.add_argument('--dp-size', type=int, default=1, help='Data parallel size.')
     parser.add_argument('--tp-size', type=int, default=1, help='Tensor parallel size.')
@@ -135,7 +131,7 @@ def parse_args() -> Namespace:
 
 
 def main() -> None:
-    """Run SFT with HuggingFace model using FSDP2 or Megatron strategies."""
+    """Run SFT with HuggingFace model using FSDP2 strategies."""
     # 1. Get command-line arguments
     args = parse_args()
 
@@ -173,12 +169,12 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, padding_side="left", use_fast=True)
 
     ## FP8
-    if args.fp8:  # source of the code ?
+    model_accelerator = None
+    if args.fp8:
         from nemo.lightning.pytorch.accelerate.transformer_engine import TEConfig
         model_accelerator = TEConfig(fp8_autocast=True)
-    else:
-        model_accelerator = None
-
+        
+    # HF
     model = llm.HFAutoModelForCausalLM(
         model_name=args.model_path,
         tokenizer=tokenizer,
@@ -220,19 +216,30 @@ def main() -> None:
 
 
     # 4. Data processing
-    train_dataset = load_dataset(str(args.dataset_path), split="train[:20%]")
+    dataset = load_dataset(str(args.dataset_path))
 
     def wrap_tuple_to_dict(old_collate_fn):
         def new_collate_fn(batch):
             t = old_collate_fn(batch)
             if isinstance(t, tuple) and len(t) >= 3:
-                return {"input_ids": t[0], "labels": t[1], "attention_mask": t[2]}
+                input_ids = t[0]
+                labels = t[1]
+                attention_mask = t[2]
+                # loss_mask: compute loss where labels != -100 (Token ID used to pad labels
+                loss_mask = (labels != -100).float()
+                return {
+                    "input_ids": input_ids,
+                    "labels": labels,
+                    "attention_mask": attention_mask,
+                    "loss_mask": loss_mask,  # necessary for Context Parallelism
+                }
             raise TypeError(f"collate_fn returned {type(t)}, expected tuple of 3 elements")
         return new_collate_fn
     collate_fn = wrap_tuple_to_dict(make_sft_collate(tokenizer, max_seq_length=args.seq_length))
 
     hf_dataset = HFDatasetDataModule(
-        train_dataset,
+        dataset,
+        split="train",
         collate_fn=collate_fn,
         num_workers=args.num_workers,
         pin_memory=True,
@@ -242,13 +249,12 @@ def main() -> None:
         use_dist_sampler=True,
         pad_seq_len_divisible=16 if args.fp8 else None,  # https://docs.nvidia.com/nemo/automodel/latest/guides/dataset-overview.html#important-considerations
     )  # https://github.com/NVIDIA-NeMo/NeMo/blob/main/nemo/collections/llm/gpt/data/hf_dataset.py#L193
-    dataloader = hf_dataset.train_dataloader()
 
 
     # 5. Training preparation
 
     # Optimizer
-    total_steps = len(dataloader) * args.epochs // grad_acc
+    total_steps = args.epochs * ceil(len(dataset['train']) / args.global_batch_size)
     lr_warmup_iters = int(args.lr_warmup_ratio * total_steps)
     optimizer = fdl.build(
         llm.adam.pytorch_adam_with_cosine_annealing(
@@ -267,11 +273,32 @@ def main() -> None:
         from lightning.pytorch.loggers import WandbLogger
         wandb = WandbLogger(
             project=args.wandb_project,
-            name=f"{args.model_path.name}_nodes{args.num_nodes}_devices{args.devices_per_node}_strat_{args.strategy}_dp{args.dp_size}_tp{args.tp_size}_cp{args.cp_size}_sp{args.sequence_parallel}_gbs{args.global_batch_size}_mbs{args.batch_size}_seqlen{args.seq_length}",
+            name = (
+                    f"{args.model_path.name}"
+                    f"_nodes{args.num_nodes}"
+                    f"_devices{args.devices_per_node}"
+                    f"_strat_{args.strategy}"
+                    f"_dp{args.dp_size}"
+                    f"_tp{args.tp_size}"
+                    f"_cp{args.cp_size}"
+                    f"_sp{args.sequence_parallel}"
+                    f"_gbs{args.global_batch_size}"
+                    f"_mbs{args.batch_size}"
+                    f"_seqlen{args.seq_length}"
+            )
         )
 
     # Chrono logging
-    callbacks.append(MyChronoCallback(rank, len(dataloader), grad_acc))
+    callbacks.append(
+        MyChronoCallback(
+            rank,
+            args.test_nsteps if args.test else total_steps,                # total number of weight updates
+            args.global_batch_size,                                        # number of samples per weight update
+            args.seq_length,                                               # number of tokens per sample
+            ceil(len(dataset['train']) / (args.batch_size*args.dp_size)),  # number of batches per epoch
+            grad_acc                                                       # number of batches per epoch / grad_acc = number of weight updates per epoch !
+        )
+    )
 
     llm.api.finetune(
         model=model,
@@ -286,11 +313,13 @@ def main() -> None:
             callbacks=callbacks,
             max_epochs=args.epochs,
             max_steps=args.test_nsteps if args.test else -1,
+            limit_val_batches=0.0,  # no validation phase
+            num_sanity_val_steps=0,  # no sanity check before training
             log_every_n_steps=args.log_every_n_steps,
             enable_checkpointing=False,
             enable_model_summary=False,
             accumulate_grad_batches=grad_acc,
-            gradient_clip_val=1.0,
+            gradient_clip_val=0.0,  # doesn't work with Tensor Parallel due to sharding of some layers (embedding layer, LayerNorm, etc.)
             use_distributed_sampler=True,  # needed to use PL DistributedSampler
         ),
         optim=optimizer,

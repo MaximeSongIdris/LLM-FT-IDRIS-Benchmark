@@ -3,6 +3,7 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from argparse import ArgumentParser, Namespace, BooleanOptionalAction
+from math import ceil
 from pathlib import Path
 import random
 import socket
@@ -240,7 +241,7 @@ def main():
         print(f"DataLoader: num_workers={args.num_workers} / prefetch_factor={args.prefetch_factor}")
         print(f"Optimizer: {optimizer}")
 
-    total_steps = len(dataloader) * args.epochs // args.grad_acc
+    total_steps = args.epochs * ceil(len(dataloader) / args.grad_acc)
     lr_warmup_iters = int(args.lr_warmup_ratio * total_steps)
     warmup_lr_scheduler = LinearLR(
         optimizer,
@@ -354,7 +355,7 @@ def main():
                 perp = perplexity.compute()
                 last_lr = lr_scheduler.get_last_lr()[0]
                 if is_main_process():
-                    print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else len(dataloader) // args.grad_acc} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
+                    print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else ceil(len(dataloader)/ args.grad_acc)} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
 
             if is_main_process():
                 prof.step()
@@ -377,12 +378,20 @@ def main():
     if is_main_process():
         prof.stop()
 
+        ## Training results
         chrono.track_cpu_training_time(start=False)
-        chrono.display_training_results(len(dataloader), args.grad_acc)
+        training_duration = chrono.display_training_results(len(dataloader), args.grad_acc)
+        global_batch_size = args.grad_acc*args.batch_size*get_world_size()
+        if args.test:
+            print(f'Throughput token/s: {args.test_nsteps*global_batch_size*args.seq_length/training_duration}')
+        else:
+            print(f'Throughput token/s: {total_steps*global_batch_size*args.seq_length/training_duration}')
 
+        ## Memory Usage
         memory_usage()
         print(f'Post-loop GPU memory usage: {torch.cuda.max_memory_allocated()/2**30} GBytes')
 
+        ## Optimizer dtype
         if args.display_optimizer_dtype:
             for k, v in optimizer.state.items():
                 print("Optimizer state dtypes:", {kk: vv.dtype for kk, vv in v.items()})

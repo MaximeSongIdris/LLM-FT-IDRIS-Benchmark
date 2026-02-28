@@ -3,6 +3,7 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from argparse import ArgumentParser, Namespace, BooleanOptionalAction
+from math import ceil
 from pathlib import Path
 import random
 import socket
@@ -102,29 +103,29 @@ def parse_args() -> Namespace:
 
     # Training related arguments
     parser.add_argument('--batch-size', type=int, default=1, help='Batch size per GPU.')
-    parser.add_argument("--seq-length", type=int, default=4096, help='Sequence length of each sample per GPU.')
+    parser.add_argument('--seq-length', type=int, default=4096, help='Sequence length of each sample per GPU.')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs.')
     parser.add_argument('--grad-acc', type=int, default=1, help='Number of batches used for a single weights update.')
 
     # Benchmarking / debugging arguments
     parser.add_argument('--test', action=BooleanOptionalAction, default=False, help='Run in test mode for a limited number of steps.')
     parser.add_argument('--test-nsteps', type=int, default=100, help='Number of steps to run in test mode.')
-    parser.add_argument("--display-optimizer-dtype", action=BooleanOptionalAction, default=False, help="Print precision of optimizer state tensors.")
+    parser.add_argument('--display-optimizer-dtype', action=BooleanOptionalAction, default=False, help='Print precision of optimizer state tensors.')
 
     # DataLoader related arguments
-    parser.add_argument('--dataset-path', type=Path, help="HuggingFaceHub dataset path.")
+    parser.add_argument('--dataset-path', type=Path, help='HuggingFaceHub dataset path.')
     parser.add_argument('--num-workers', type=int, default=4, help='Number of workers spawned by the dataloader.')
     parser.add_argument('--prefetch-factor', type=int, default=2, help='Number of batches loaded in RAM per worker.')
 
     # Optimizer AdamW related arguments
-    parser.add_argument("--lr-warmup-ratio", type=float, default=0.1, help="Fraction of training steps for linear LR warmup (0.1 = 10%).")
-    parser.add_argument("--learning-rate", type=float, default=1e-5, help="Learning rate for AdamW.")
-    parser.add_argument("--weight-decay", type=float, default=0.1, help="Weight decay for AdamW.")
+    parser.add_argument('--lr-warmup-ratio', type=float, default=0.1, help='Fraction of training steps for linear LR warmup (0.1 = 10%).')
+    parser.add_argument('--learning-rate', type=float, default=1e-5, help='Learning rate for AdamW.')
+    parser.add_argument('--weight-decay', type=float, default=0.1, help='Weight decay for AdamW.')
 
     # Model related arguments
-    parser.add_argument("--model-path", type=Path, help="HuggingFaceHub model path.")
-    parser.add_argument("--selective-activation-checkpointing", type=str, default=None, help='For a given ac ratio p, we should essentially apply ac on every "1/p" blocks.')
-    parser.add_argument("--compile", action=BooleanOptionalAction, default=False, help="Whether or not to compile model.")
+    parser.add_argument('--model-path', type=Path, help='HuggingFaceHub model path.')
+    parser.add_argument('--selective-activation-checkpointing', type=str, default=None, help='For a given ac ratio p, we should essentially apply ac on every "1/p" blocks.')
+    parser.add_argument('--compile', action=BooleanOptionalAction, default=False, help='Whether or not to compile model.')
 
     return parser.parse_args()
 
@@ -239,7 +240,7 @@ def main():
         print(f"DataLoader: num_workers={args.num_workers} / prefetch_factor={args.prefetch_factor}")
         print(f"Optimizer: {optimizer}")
 
-    total_steps = len(dataloader) * args.epochs // args.grad_acc
+    total_steps = args.epochs * ceil(len(dataloader) / args.grad_acc)
     lr_warmup_iters = int(args.lr_warmup_ratio * total_steps)
     warmup_lr_scheduler = LinearLR(
         optimizer,
@@ -285,9 +286,9 @@ def main():
 
     ## Real training
     dist.barrier()  # Wait for all CPUs and GPUs to be synchronized before continuing
-    torch.cuda.cudart().cudaProfilerStart()
+    if is_main_process(): chrono.track_cpu_training_time(start=True)
 
-    if is_main_process():chrono.track_cpu_training_time(start=True)
+    torch.cuda.cudart().cudaProfilerStart()
 
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)  # set epoch for a sampler
@@ -342,7 +343,7 @@ def main():
                 perp = perplexity.compute()
                 last_lr = lr_scheduler.get_last_lr()[0]
                 if is_main_process():
-                    print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else len(dataloader) // args.grad_acc} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
+                    print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else ceil(len(dataloader)/ args.grad_acc)} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
 
         # Checkpointing by rank 0
         if not args.test:
@@ -361,12 +362,20 @@ def main():
     torch.cuda.cudart().cudaProfilerStop()
 
     if is_main_process():
+        ## Training results
         chrono.track_cpu_training_time(start=False)
-        chrono.display_training_results(len(dataloader), args.grad_acc)
+        training_duration = chrono.display_training_results(len(dataloader), args.grad_acc)
+        global_batch_size = args.grad_acc*args.batch_size*get_world_size()
+        if args.test:
+            print(f'Throughput token/s: {args.test_nsteps*global_batch_size*args.seq_length/training_duration}')
+        else:
+            print(f'Throughput token/s: {total_steps*global_batch_size*args.seq_length/training_duration}')
 
+        ## Memory Usage
         memory_usage()
         print(f'Post-loop GPU memory usage: {torch.cuda.max_memory_allocated()/2**30} GBytes')
 
+        ## Optimizer dtype
         if args.display_optimizer_dtype:
             for k, v in optimizer.state.items():
                 print("Optimizer state dtypes:", {kk: vv.dtype for kk, vv in v.items()})

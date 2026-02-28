@@ -1,3 +1,4 @@
+from math import ceil
 from time import time
 import numpy as np
 import torch
@@ -103,7 +104,7 @@ class TrainingChronometer:
         else:
             print(f">>> {name}: insufficient data (n={len(data)})")
                 
-    def display_training_results(self, total_batches: int, grad_acc: int) -> None:
+    def display_training_results(self, total_batches_per_epoch: int, grad_acc: int) -> float:
         """Print a summary of training performance."""
         # Should be executed at the end of training. This ensures that GPU stopped working.
         torch.cuda.synchronize()
@@ -114,7 +115,8 @@ class TrainingChronometer:
         time_perf_bwd = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_bwd, self.end_bwd)]
         
         # Step statistics
-        print(">>> Training complete in: " + str(self.end_training_time - self.start_training_time))
+        training_duration = self.end_training_time - self.start_training_time
+        print(">>> Training complete in: " + str(training_duration))
         self.print_percentile_summary(time_perf_HtoD, "Host to Device performance time")
         self.print_percentile_summary(time_perf_fwd, "Forward pass performance time")
         self.print_percentile_summary(time_perf_bwd, "Backward pass performance time")
@@ -122,5 +124,7 @@ class TrainingChronometer:
         # Total training time estimation
         time_perf_step = [x + y + z for (x,y,z) in zip(time_perf_HtoD, time_perf_fwd, time_perf_bwd)]
         self.print_percentile_summary(time_perf_step, "Step performance time")
-        print(f'>>> Number of weight updates per epoch: {(total_batches + grad_acc - 1) // grad_acc}')
-        print(f'>>> Estimated training time of 1 epoch: {np.median(time_perf_step) * total_batches / 3600} h')
+        print(f'>>> Number of weight updates per epoch: {ceil(total_batches_per_epoch / grad_acc)}')
+        print(f'>>> Estimated training time of 1 epoch: {np.median(time_perf_step) * total_batches_per_epoch / 3600} h')
+
+        return training_duration
