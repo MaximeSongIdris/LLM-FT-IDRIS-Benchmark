@@ -4,26 +4,33 @@
 
 ## Experience
 
-### 1) FSDP2 + Selective Activation Checkpointing on H100 80 Go (Qwen2.5-7B-Instruct)
+- To balance variability in the results with computational cost, we report the median of three independent runs.
+
+### 1) FSDP2 + Selective Activation Checkpointing (native PyTorch) on H100 80 Go (Qwen2.5-7B-Instruct)
 
 #### Required AC and GA for multi-gpus training with fixed batch size per GPU (effective batch size = 64)
 
 |         | bs=1          | bs=2           | bs=4         | bs=8          |
 |---------|---------------|----------------|--------------|---------------|
-| GPUs=1  | AC=0.4, GA=64 | AC=0.85, GA=32 | -            | -             |
+| GPUs=1  | AC=0.4, GA=64 | AC=0.85, GA=32 | OOM          | OOM           |
 | GPUs=4  | -             | AC=0.0, GA=8   | AC=0.5, GA=4 | AC=0.95, GA=2 |
 | GPUs=8  | -             | AC=0.0, GA=4   | AC=0.5, GA=2 | AC=0.90, GA=1 |
 | GPUs=16 | -             | AC=0.0, GA=2   | AC=0.4, GA=1 | -             |
+| GPUs=32 | -             | AC=0.0, GA=1   | -            | -             |
+| GPUs=64 | AC=0.0, GA=1  | -              | -            | -             |
 
 - **AC** (Activation Checkpointing): ratio of activation layers that are not in memory (0.0 = all in memory, 1.0 = nothing in memory). Trades compute for memory.
 - **GA** (Gradient Accumulation): number of forward/backward passes before optimizer step. Trades compute for memory.
-- **Effective batch size** = GPUs × bs × GA = 64 for all configurations
+- **Effective batch size** = GPUs × bs × GA = 64 for all configurations.
+- **OOM** (Out of memory).
+- **-**: configuration skipped because the effective batch size exceeds 64, or because of lower throughput than an equivalent setup with same GPUs and larger batch size.
 
 #### Training time depending on the number of GPUs and on the effect of Selective Activation Checkpointing
 
 <img src="asset/training_time_vs_activation_ckpt.png" width="800">
 
-By increasing the bs thanks to the selective activation checkpointing, we expected to speed-up the training as we reduce the costly gradient accumulation. Furthermore, since we are doing less forwards/backwards in total, it should be further speed-up as we reduce the number of communication. However as soon as we use FSDP2 (multi-gpus training), AC starts actually increasing the training time. Why ?
+- The 7B model cannot be trained on a single GPU with **BF16** alone, **AC** is required to fit it in memory. Additionally, the strong scaling across multiple GPUs yields near-linear speedup, which is a great way to maximize the throughput (for the same effective batch size).
+- By increasing the bs thanks to the selective activation checkpointing, we expected to speed-up the training as we reduce the costly gradient accumulation. Furthermore, since we are doing less forwards/backwards in total, it should be further speed-up as we reduce the number of communication. However as soon as we use FSDP2 (multi-gpus training), AC starts actually increasing the training time. Why ?
 
 #### Analysis on 4 GPUs with effective batch size = 4
 
@@ -34,11 +41,45 @@ By increasing the bs thanks to the selective activation checkpointing, we expect
 - In bs=1 and bs=2, the kernel configuration is identical: 132 blocks and 384 threads per block, which means that we are actually asking for each thread to work twice as much ( twice the data transfer and twice the computation).
 - Since we have 1 block per SM (132 SM in H100) and 4 schedulers per SM, and each scheduler deals by group of 32 threads. Each scheduler has 3 groups.
 - By using Nsight compute, we can see that the average scheduler executed 530 524 instructions for bs=1 and 1 060 689 instructions for bs=2. Thus we can infer that each group of threads is dealing with twice the work by doing it sequentially.
-- In Nsight compute, with bs=1, the Tensor Core is only active 31% of cycles and memory throughput reaches 60%. This suggests spare capacity exists. In theory, bs=2 instructions could fill the idle cycles by interleaving batch 0 and batch 1 operations within each warp. However, this interleaving would require storing two independent working contexts simultaneously in registers, which is limited. The bottleneck here may be due to the on-chip memory (we could try to verify by looking at the warp lifecycle and monitor the pipe usage and register usage).
+- In Nsight compute, with bs=1, the Tensor Core is only active 31% of cycles and memory throughput reaches 60%. This suggests spare capacity exists. In theory, bs=2 instructions could fill the idle cycles by interleaving sample 0 and sample 1 operations within each warp. However, this interleaving would require storing two independent working contexts simultaneously in registers, which is limited. The bottleneck here may be due to the on-chip memory (we could try to verify by looking at the warp lifecycle and monitor the pipe usage and register usage).
+
+#### Max Throughput (number of input tokens/s) with fixed effective batch size = 64
+
+|                           | GPUs=1        | GPUs=4         | bs=8           | bs=16           | bs=32           | bs=64           |
+|---------------------------|---------------|----------------|----------------|-----------------|-----------------|-----------------|
+| Throughput                | 7113 tokens/s | 37470 tokens/s | 77815 tokens/s | 144622 tokens/s | 266123 tokens/s | 364308 tokens/s |
+| bs/GPU                    | 2             | 2              | 2              | 2               | 2               | 1               |
+| Median Est. Step Duration | 1.138 s       | 0.816 s        | 0.827 s        | 0.837 s         | 0.851 s         | 0.558           |
+
+- Est. Step Duration: CUDA Event was used to measure the time taken for a single step (=1 Host-to-Device transfer + 1 forward + 1 backward + optional Optimizer update)
+- Median Est. Step Duration: The median of all the `Est. Step Duration`in a single run.
+- `Median Est. Step Duration` increases for `GPUs=1` because of the additional overhead from activation checkpointing.
+- `Median Est. Step Duration` decreases for `GPUs=64` due to `bs/GPU=1`.
+
+<img src="asset/gpu_scaling_7B.png" width="600">
+
+### 2) FSDP2 + Selective Activation Checkpointing (native PyTorch) on H100 80 Go (Qwen2.5-72B-Instruct)
+
+#### Required AC and GA for multi-gpus training with fixed batch size per GPU (effective batch size = 512)
+
+|         | bs=1          | bs=2           | bs=4 |
+|---------|---------------|----------------|
+| GPUs=8  |- | | |
+| GPUs=16 |
+| GPUs=32 | AC=0.65 GA=16 | AC=0.9, GA=8   |
+| GPUs=64 | AC=0.55 GA=8  | AC=0.85, GA=4  |
+
+#### Training time depending on the number of GPUs and on the effect of Selective Activation Checkpointing
+
+#### Max Throughput (number of input tokens/s) with fixed effective batch size = 512
+
+### 3) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
 
 ### Issues
 
 - I tried to monitor the GPU by capturing the trace via Nsight system (`nsys profile --trace osrt,cuda,cublas,cudnn,nvtx`), but I couldn't get the detailed GPU view, instead I've got only the CPU view and the Process view (which has some GPU metrics).
+- Conflict with gradient clipping and Tensor parallelism inside NeMo due to some layers not being in the same device mesh as the Multi-Head Attention layers.
+- Conflict with the dataset and Context parallelism inside NeMo due to missing `loss_mask` in dataset.
 
 ## Sources
 

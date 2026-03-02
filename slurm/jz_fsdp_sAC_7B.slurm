@@ -1,13 +1,13 @@
 #!/bin/bash
 
 ## JOB INFO
-#SBATCH --job-name=32fsdp+0.0AC+7B+64bs
+#SBATCH --job-name=64fsdp+0.0AC+7B+64bs
 #SBATCH --output=slurm_logs/%x_%j.out
 #SBATCH --error=slurm_logs/%x_%j.out
 
 ## NODE CONFIGURATION
 #SBATCH --constraint=h100
-#SBATCH --nodes=8
+#SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=24
@@ -15,9 +15,9 @@
 
 ## JOB ACCOUNTABILITY
 #SBATCH --account=sos@h100
-#SBATCH --qos=qos_gpu_h100-dev
+#SBATCH --qos=qos_gpu_h100-t3
 #SBATCH --time=02:00:00
-#SBATCH --array=0
+#SBATCH --array=0-2
 
 
 ## ENV ACTIVATION
@@ -25,7 +25,7 @@ module purge
 module load singularity
 
 ## JOB ARRAY INDEX → AC value
-AC_VALUES=(0.0)
+AC_VALUES=(0.0 0.0 0.0)
 AC=${AC_VALUES[$SLURM_ARRAY_TASK_ID]}
 
 ## CODE EXECUTION
@@ -41,10 +41,11 @@ time srun singularity exec \
     --bind $WORK/LLM-FT-IDRIS-Benchmark,$DSDIR \
     $SINGULARITY_ALLOWED_DIR/nemo_2509.sif \
     python -u $WORK/LLM-FT-IDRIS-Benchmark/FSDP_sAC.py \
-        --batch-size 2 \
+        --batch-size 1 \
         --epochs 1 \
         --grad-acc 1 \
         --test \
+        --test-nsteps 100 \
         --display-optimizer-dtype \
         --dataset-path $WORK/LLM-FT-IDRIS-Benchmark/dataset/tulu-3-sft-mixture \
         --model-path $DSDIR/HuggingFace_Models/Qwen/Qwen2.5-7B-Instruct \
