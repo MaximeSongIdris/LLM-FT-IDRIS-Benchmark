@@ -27,7 +27,7 @@
 
 #### Training time depending on the number of GPUs and on the effect of Selective Activation Checkpointing
 
-<img src="asset/training_time_vs_activation_ckpt.png" width="800">
+<img src="asset/training_time_vs_activation_ckpt_7B.png" width="800">
 
 - The 7B model cannot be trained on a single GPU with **BF16** alone, **AC** is required to fit it in memory. Additionally, the strong scaling across multiple GPUs yields near-linear speedup, which is a great way to maximize the throughput (for the same effective batch size).
 - By increasing the bs thanks to the selective activation checkpointing, we expected to speed-up the training as we reduce the costly gradient accumulation. Furthermore, since we are doing less forwards/backwards in total, it should be further speed-up as we reduce the number of communication. However as soon as we use FSDP2 (multi-gpus training), AC starts actually increasing the training time. Why ?
@@ -49,7 +49,7 @@
 |---------------------------|---------------|----------------|----------------|-----------------|-----------------|-----------------|
 | Throughput                | 7113 tokens/s | 37470 tokens/s | 77815 tokens/s | 144622 tokens/s | 266123 tokens/s | 364308 tokens/s |
 | bs/GPU                    | 2             | 2              | 2              | 2               | 2               | 1               |
-| Median Est. Step Duration | 1.138 s       | 0.816 s        | 0.827 s        | 0.837 s         | 0.851 s         | 0.558           |
+| Median Est. Step Duration | 1.138 s       | 0.816 s        | 0.827 s        | 0.837 s         | 0.851 s         | 0.558 s         |
 
 - Est. Step Duration: CUDA Event was used to measure the time taken for a single step (=1 Host-to-Device transfer + 1 forward + 1 backward + optional Optimizer update)
 - Median Est. Step Duration: The median of all the `Est. Step Duration`in a single run.
@@ -62,16 +62,37 @@
 
 #### Required AC and GA for multi-gpus training with fixed batch size per GPU (effective batch size = 512)
 
-|         | bs=1          | bs=2           | bs=4 |
-|---------|---------------|----------------|
-| GPUs=8  |- | | |
-| GPUs=16 |
-| GPUs=32 | AC=0.65 GA=16 | AC=0.9, GA=8   |
-| GPUs=64 | AC=0.55 GA=8  | AC=0.85, GA=4  |
+|         | bs=1          | bs=2           | bs=4         | bs=8 |
+|---------|---------------|----------------|--------------|------|
+| GPUs=8  | OOM           | OOM            | OOM          | OOM  |
+| GPUs=16 | AC=0.85 GA=32 | AC=1.0, GA=16  | OOM          | OOM  |
+| GPUs=32 | AC=0.65 GA=16 | AC=0.9, GA=8   | AC=1.0, GA=4 | OOM  |
+| GPUs=64 | AC=0.55 GA=8  | AC=0.85, GA=4  | AC=1.0, GA=2 | OOM  |
+
+- **AC** (Activation Checkpointing): ratio of activation layers that are not in memory (0.0 = all in memory, 1.0 = nothing in memory). Trades compute for memory.
+- **GA** (Gradient Accumulation): number of forward/backward passes before optimizer step. Trades compute for memory.
+- **Effective batch size** = GPUs × bs × GA = 512 for all configurations.
+- **OOM** (Out of memory).
 
 #### Training time depending on the number of GPUs and on the effect of Selective Activation Checkpointing
 
+<img src="asset/training_time_vs_activation_ckpt_72B.png" width="800">
+
+- The 72B model cannot be trained on 64 GPUs with **BF16** alone,  **AC** is required to fit it in memory.
+- Trading GA for AC speedups our training.
+
 #### Max Throughput (number of input tokens/s) with fixed effective batch size = 512
+
+|                           | bs=16          | bs=32          | bs=64          |
+|---------------------------|----------------|----------------|----------------|
+| Throughput                | 12067 tokens/s | 25997 tokens/s | 51459 tokens/s |
+| bs/GPU                    | 2              | 4              | 4              |
+| Median Est. Step Duration | 10.271 s       | 19.522 s       | 19.612 s        |
+
+- Est. Step Duration: CUDA Event was used to measure the time taken for a single step (=1 Host-to-Device transfer + 1 forward + 1 backward + optional Optimizer update)
+- Median Est. Step Duration: The median of all the `Est. Step Duration`in a single run.
+
+<img src="asset/gpu_scaling_72B.png" width="600">
 
 ### 3) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
 
