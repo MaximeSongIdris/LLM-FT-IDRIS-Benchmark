@@ -9,6 +9,7 @@ slurm_logs/
 profile/
 nsight_report/
 ncu_report/
+nemo_experiments/
 
 # Files
 *.sif

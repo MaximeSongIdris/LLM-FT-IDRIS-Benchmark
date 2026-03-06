@@ -104,7 +104,7 @@ class TrainingChronometer:
         else:
             print(f">>> {name}: insufficient data (n={len(data)})")
                 
-    def display_training_results(self, total_batches_per_epoch: int, grad_acc: int) -> float:
+    def display_training_results(self, total_batches_per_epoch: int, grad_acc: int, skip_steps: int=0) -> float:
         """Print a summary of training performance."""
         # Should be executed at the end of training. This ensures that GPU stopped working.
         torch.cuda.synchronize()
@@ -113,6 +113,11 @@ class TrainingChronometer:
         time_perf_HtoD = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_HtoD, self.end_HtoD)]
         time_perf_fwd = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_fwd, self.end_fwd)]
         time_perf_bwd = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_bwd, self.end_bwd)]
+
+        # Skip the first n steps to avoid outliers that may be due to warm-up
+        time_perf_HtoD = time_perf_HtoD[skip_steps:]
+        time_perf_fwd = time_perf_fwd[skip_steps:]
+        time_perf_bwd = time_perf_bwd[skip_steps:]
         
         # Step statistics
         training_duration = self.end_training_time - self.start_training_time

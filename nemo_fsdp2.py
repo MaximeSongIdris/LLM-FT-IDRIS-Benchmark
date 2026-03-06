@@ -12,7 +12,7 @@ from math import ceil
 from pathlib import Path
 import os
 
-from datasets import load_dataset
+from datasets import DatasetDict, load_dataset
 from nemo import lightning as nl
 from nemo.automodel.loss import masked_cross_entropy
 from nemo.automodel.misc_utils import calculate_valid_accumulate_grad_batches
@@ -189,8 +189,10 @@ def main() -> None:
     ## JIT
     callbacks = []
     if args.compile:
-        jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': False}, use_thunder=False)
-        callbacks.append(JitTransform(jit_config))
+        jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': False})
+
+        # https://docs.nvidia.com/nemo-framework/user-guide/25.09/nemotoolkit/automodel/codedocs/jit_callback.html
+        callbacks.append(JitTransform(jit_config))  # called at the start of each epoch
 
     # Distributed training strategy
     strategy = create_strategy(
@@ -217,6 +219,10 @@ def main() -> None:
 
     # 4. Data processing
     dataset = load_dataset(str(args.dataset_path))
+    dataset_with_val = DatasetDict({
+        'train': dataset['train'],
+        'validation': dataset['train'],
+    })  # Duplicate train dataset as val dataset to be used for warm-up on validation during training with NeMo API call
 
     def wrap_tuple_to_dict(old_collate_fn):
         def new_collate_fn(batch):
@@ -238,8 +244,8 @@ def main() -> None:
     collate_fn = wrap_tuple_to_dict(make_sft_collate(tokenizer, max_seq_length=args.seq_length))
 
     hf_dataset = HFDatasetDataModule(
-        dataset,
-        split="train",
+        dataset_with_val,
+        split=["train", "validation"],
         collate_fn=collate_fn,
         num_workers=args.num_workers,
         pin_memory=True,
@@ -313,8 +319,9 @@ def main() -> None:
             callbacks=callbacks,
             max_epochs=args.epochs,
             max_steps=args.test_nsteps if args.test else -1,
-            limit_val_batches=0.0,  # no validation phase
-            num_sanity_val_steps=0,  # no sanity check before training
+            limit_val_batches=5,  # for warmup in sanity check
+            val_check_interval=100000,  # wait a loooonnnng time before validation
+            num_sanity_val_steps=5,
             log_every_n_steps=args.log_every_n_steps,
             enable_checkpointing=False,
             enable_model_summary=False,
