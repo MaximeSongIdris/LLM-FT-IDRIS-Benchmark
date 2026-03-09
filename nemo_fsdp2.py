@@ -222,7 +222,7 @@ def main() -> None:
     dataset_with_val = DatasetDict({
         'train': dataset['train'],
         'validation': dataset['train'],
-    })  # Duplicate train dataset as val dataset to be used for warm-up on validation during training with NeMo API call
+    })  # Duplicate train dataset as val dataset to be used for warm-up during training with NeMo training API
 
     def wrap_tuple_to_dict(old_collate_fn):
         def new_collate_fn(batch):
@@ -319,9 +319,8 @@ def main() -> None:
             callbacks=callbacks,
             max_epochs=args.epochs,
             max_steps=args.test_nsteps if args.test else -1,
-            limit_val_batches=5,  # for warmup in sanity check
-            val_check_interval=100000,  # wait a loooonnnng time before validation
-            num_sanity_val_steps=5,
+            limit_val_batches=0,  # for warmup in sanity check
+            num_sanity_val_steps=0,  # useless since torch.compile re-compile at each epoch
             log_every_n_steps=args.log_every_n_steps,
             enable_checkpointing=False,
             enable_model_summary=False,

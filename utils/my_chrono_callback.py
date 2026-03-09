@@ -17,6 +17,7 @@ class MyChronoCallback(pl.Callback):
         self.total_batches_per_epoch = total_batches_per_epoch
         self.grad_acc = grad_acc
         self.chronometer = TrainingChronometer()
+        self.curr_step = 0
 
     def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         if self.rank == 0:
@@ -30,15 +31,18 @@ class MyChronoCallback(pl.Callback):
                     print(f"  shape: {param.device_mesh.shape}")
                     print(f"  placements: {param.placements}")
 
-            self.chronometer.track_cpu_training_time(start=True)
-
     def on_train_batch_start(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", batch: Any, batch_idx: int
     ) -> None:
         if self.rank == 0:
+            if self.curr_step == self.grad_acc:  # ignore the first weight update (considered as warmup)
+                self.chronometer.track_cpu_training_time(start=True)
+
             self.chronometer.track_gpu_HtoD_step_time(start=True)  # no hook before forward to observe data transfer
             self.chronometer.track_gpu_HtoD_step_time(start=False)
             self.chronometer.track_gpu_fwd_step_time(start=True)
+
+            self.curr_step += 1
 
     def on_before_backward(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", loss: torch.Tensor) -> None:
         if self.rank == 0:
@@ -55,8 +59,10 @@ class MyChronoCallback(pl.Callback):
         if self.rank == 0:
             ## Training results
             self.chronometer.track_cpu_training_time(start=False)
-            training_duration = self.chronometer.display_training_results(self.total_batches_per_epoch, self.grad_acc)
-            print(f'Throughput: {self.n_steps*self.global_batch_size*self.seq_len/training_duration:.1f} tokens/s')
+
+            # We have the first weight update as warmup
+            training_duration = self.chronometer.display_training_results(self.total_batches_per_epoch, self.grad_acc, skip_steps=self.grad_acc)
+            print(f'Throughput: {(self.n_steps-1)*self.global_batch_size*self.seq_len/training_duration:.1f} tokens/s')
 
             ## Memory Usage
             memory_usage()
