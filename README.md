@@ -87,14 +87,41 @@
 |---------------------------|----------------|----------------|----------------|
 | Throughput                | 12067 tokens/s | 25997 tokens/s | 51459 tokens/s |
 | bs/GPU                    | 2              | 4              | 4              |
-| Median Est. Step Duration | 10.271 s       | 19.522 s       | 19.612 s        |
+| Median Est. Step Duration | 10.271 s       | 19.522 s       | 19.612 s       |
 
 - Est. Step Duration: CUDA Event was used to measure the time taken for a single step (=1 Host-to-Device transfer + 1 forward + 1 backward + optional Optimizer update)
 - Median Est. Step Duration: The median of all the `Est. Step Duration`in a single run.
 
 <img src="asset/gpu_scaling_72B.png" width="600">
 
-### 3) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
+### 3) Intra-Node Parallelism comparison (NeMo) on H100 80 Go (Qwen2.5-7B-Instruct)
+
+- The sharding in FSDP2 on NeMo is done automatically (and may have an optimized sharding) unlike in previous experiences.
+
+#### 1D efficiency depending on bs
+
+- Intra-Node H100: **4 GPUs**
+- Attention Implementation: **FlashAttention 2**
+- Bigger bs improves compute performance in 1D parallelism on this model.
+- Using AC to increase bs degrades compute performance in 1D parallelism on this model.
+- FlashAttention 2 is faster than SPDA.
+
+<img src="asset/intra_node_parallelism_comparison.png" width="800">
+
+#### Max Throughput (number of input tokens/s) with fixed effective batch size = 64 (GPUs=4)
+
+|                           | 4 fsdp         | 4 tp           | 4 cp           | 2 fsdp 2 tp    | 2 fsdp 2 cp    | 2 tp 2 cp      |
+|---------------------------|----------------|----------------|----------------|----------------|----------------|----------------|
+| Throughput                | 43001 tokens/s | 31470 tokens/s | 31236 tokens/s | 35326 tokens/s | 48184 tokens/s | 30754 tokens/s |
+| bs/GPU                    | 2              | 4              | 4              | 4              | 4              | 4              |
+| Median Est. Step Duration | 0.644 s        | 0.496 s        | 0.498 s        | 0.872 s        | 0.669 s        | 0.523 s        |
+| GA                        | 8              | 16             | 16             | 8              | 8              | 16             |
+
+- We avoid using AC.
+- In 1D setting, FSDP2 is more efficient than TP or CP, however it is limited by bs/GPU=2.
+- In 2D setting, with a combination of FSDP2 and CP, we benefit both from FSDP's communication efficiency and CP's ability to double the effective batch size per GPU (from 2 to 4), resulting in the highest throughput at 48184 tokens/s, a 12% improvement over the best 1D configuration.
+
+### 4) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
 
 ### Issues
 
