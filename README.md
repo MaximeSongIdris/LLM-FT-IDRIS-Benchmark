@@ -83,7 +83,7 @@
 
 #### Max Throughput (number of input tokens/s) with fixed effective batch size = 512
 
-|                           | bs=16          | bs=32          | bs=64          |
+|                           | GPUs=16        | GPUs=32        | GPU=64         |
 |---------------------------|----------------|----------------|----------------|
 | Throughput                | 12067 tokens/s | 25997 tokens/s | 51459 tokens/s |
 | bs/GPU                    | 2              | 4              | 4              |
@@ -125,13 +125,18 @@
 
 ### Issues
 
+- GPU kernel launches are asynchronous, so CPU timers only measure the time to enqueue the kernel.
 - I tried to monitor the GPU by capturing the trace via Nsight system (`nsys profile --trace osrt,cuda,cublas,cudnn,nvtx`), but I couldn't get the detailed GPU view, instead I've got only the CPU view and the Process view (which has some GPU metrics).
 - Conflict with gradient clipping and Tensor parallelism inside NeMo due to some layers not being in the same device mesh as the Multi-Head Attention layers.
 - Conflict with the dataset and Context parallelism inside NeMo due to missing `loss_mask` in dataset.
+- Very long first forward at the beginning of each epoch inside NeMo due to torch.compile tracing that biases the time measurements.
 
 ## Sources
 
 - Original code: https://github.com/BertrandCabotPro/Democratizing-LLM-FT
 - Source for FSDP + Selective activation checkpointing: https://pytorch.org/blog/maximizing-training/
 - SLURM configuration for NeMo: https://docs.nvidia.com/nemo/automodel/latest/launcher/cluster.html
+- NCCL Config: https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html
+- NCCL Debug: https://docs.cloud.google.com/ai-hypercomputer/docs/nccl/collect-and-understand
+- Measuring Bandwidth: https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md
 - Nvidia GPU guide: https://modal.com/gpu-glossary

@@ -25,9 +25,12 @@ import torch.distributed as dist
 
 from utils import (
     apply_fsdp_checkpointing,
+    comm_profiler,
     expand_hostlist,
+    get_comm_results,
     make_sft_collate,
     memory_usage,
+    NCCLTagger,
     TrainingChronometer,
 )
 
@@ -286,6 +289,9 @@ def main():
 
     ## Real training
     dist.barrier()  # Wait for all CPUs and GPUs to be synchronized before continuing
+    tagger = NCCLTagger()  # to add user-defined tag in NCCL log
+    global_batch_idx = 0
+    tagger.tag(global_batch_idx, "TRAINING START")
     if is_main_process(): chrono.track_cpu_training_time(start=True)
 
     torch.cuda.cudart().cudaProfilerStart()
@@ -296,6 +302,7 @@ def main():
         for i, (input_ids, labels, attention_mask) in enumerate(dataloader, start=1):
             if args.test and i > args.test_nsteps * args.grad_acc: break
 
+            global_batch_idx += 1
             if is_main_process(): chrono.track_gpu_HtoD_step_time(start=True)
 
             # Data Transfer
@@ -309,6 +316,7 @@ def main():
                 chrono.track_gpu_fwd_step_time(start=True)
 
             # Forward
+            tagger.tag(global_batch_idx, "Forward")  # NCCL can be called during Forward
             with nvtx.range("Forward"):
                 local_logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
                 bs, seq_len, vocab_size = local_logits.shape
@@ -322,10 +330,12 @@ def main():
                 chrono.track_gpu_fwd_step_time(start=False)
                 chrono.track_gpu_bwd_step_time(start=True)
 
+            tagger.tag(global_batch_idx, "Backward")  # NCCL can be called during Backward
             with nvtx.range("Backward"):
                 local_loss /= args.grad_acc  # take into account gradient accumulation impact
                 local_loss.backward()  # gradients are automatically divided by world_size: https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/_runtime_utils.py#L831
 
+            tagger.tag(global_batch_idx, "Optimizer")  # NCCL can be called for gradient clipping
             with nvtx.range("Optimizer"):
                 if i % args.grad_acc == 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -364,6 +374,12 @@ def main():
     if is_main_process():
         ## Training results
         chrono.track_cpu_training_time(start=False)
+
+        nccl_log_path = os.environ["NCCL_DEBUG_FILE"]
+        nccl_log_path = nccl_log_path.replace("%p", str(os.getpid()))
+        comms_profile = comm_profiler([nccl_log_path])
+        get_comm_results(comms_profile)
+
         training_duration = chrono.display_training_results(len(dataloader), args.grad_acc)
         global_batch_size = args.grad_acc*args.batch_size*get_world_size()
         if args.test:

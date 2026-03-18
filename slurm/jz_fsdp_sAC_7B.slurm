@@ -1,13 +1,13 @@
 #!/bin/bash
 
 ## JOB INFO
-#SBATCH --job-name=64fsdp+0.0AC+7B+64bs
+#SBATCH --job-name=4fsdp+0.0AC+7B+64bs
 #SBATCH --output=slurm_logs/%x_%j.out
 #SBATCH --error=slurm_logs/%x_%j.out
 
 ## NODE CONFIGURATION
 #SBATCH --constraint=h100
-#SBATCH --nodes=16
+#SBATCH --nodes=1
 #SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=24
@@ -15,7 +15,7 @@
 
 ## JOB ACCOUNTABILITY
 #SBATCH --account=sos@h100
-#SBATCH --qos=qos_gpu_h100-t3
+#SBATCH --qos=qos_gpu_h100-dev
 #SBATCH --time=02:00:00
 #SBATCH --array=0-2
 
@@ -32,7 +32,10 @@ AC=${AC_VALUES[$SLURM_ARRAY_TASK_ID]}
 set -x
 export NCCL_MNNVL_ENABLE=1
 export NCCL_NET_GDR_LEVEL=SYS
-export NCCL_DEBUG=WARN
+export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=INIT,COLL,NET,GRAPH,TUNING,NVLS,PROXY
+export NCCL_DEBUG_TIMESTAMP_LEVELS=INFO,WARN
+export NCCL_DEBUG_FILE=slurm_logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}_%p.nccl
 ulimit -s 8192  # issue with thread stack when using a lot of GPUs
 
 export HF_HOME=$WORK/LLM-FT-IDRIS-Benchmark/.cache
@@ -41,9 +44,9 @@ time srun singularity exec \
     --bind $WORK/LLM-FT-IDRIS-Benchmark,$DSDIR \
     $SINGULARITY_ALLOWED_DIR/nemo_2509.sif \
     python -u $WORK/LLM-FT-IDRIS-Benchmark/FSDP_sAC.py \
-        --batch-size 1 \
+        --batch-size 2 \
         --epochs 1 \
-        --grad-acc 1 \
+        --grad-acc 8 \
         --test \
         --test-nsteps 100 \
         --display-optimizer-dtype \

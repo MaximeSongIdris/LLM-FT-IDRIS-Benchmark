@@ -23,7 +23,7 @@ from transformers import AutoTokenizer
 import fiddle as fdl
 import lightning.pytorch as pl
 
-from utils import make_sft_collate, MyChronoCallback
+from utils import make_sft_collate, BenchmarkCallback
 
 
 def _get_offload_policy(enable_cpu_offload: bool) -> "CPUOffloadPolicy | None":
@@ -294,9 +294,9 @@ def main() -> None:
             )
         )
 
-    # Chrono logging
+    # Benchmark logging
     callbacks.append(
-        MyChronoCallback(
+        BenchmarkCallback(
             rank,
             args.test_nsteps if args.test else total_steps,                # total number of weight updates
             args.global_batch_size,                                        # number of samples per weight update

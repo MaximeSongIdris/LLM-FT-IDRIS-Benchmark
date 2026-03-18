@@ -27,7 +27,10 @@ module load singularity
 set -x
 export NCCL_MNNVL_ENABLE=1
 export NCCL_NET_GDR_LEVEL=SYS
-export NCCL_DEBUG=WARN
+export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=INIT,COLL,NET,GRAPH,TUNING,NVLS,PROXY
+export NCCL_DEBUG_TIMESTAMP_LEVELS=INFO,WARN
+export NCCL_DEBUG_FILE=slurm_logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}_%p.nccl
 ulimit -s 8192  # issue with thread stack when using a lot of GPUs
 
 export HF_HOME=$WORK/LLM-FT-IDRIS-Benchmark/.cache
