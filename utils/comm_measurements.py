@@ -1,6 +1,7 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import re
 
 
 def wire_bytes_per_gpu(coll_op: str, nccl_count: int, datatype: int, nranks: int):
@@ -52,7 +53,7 @@ def wire_bytes_per_gpu(coll_op: str, nccl_count: int, datatype: int, nranks: int
 
     return nccl_count * count_factor[coll_op] * datatype_factor[datatype] * bus_bandwidth_factor[coll_op]
 
-def comm_profiler(log_files: list[str]) -> dict:
+def comm_profiler(log_files: list[str], processes: list[int]) -> dict:
     """
     Parse NCCL INFO logs for a single GPU and visualize collective communication volumes.
 
@@ -66,7 +67,7 @@ def comm_profiler(log_files: list[str]) -> dict:
 
     coll_dict = {
         'timestamp': [],
-        'rank': [],
+        'process': [],
         'coll_operation': [],
         'comm_per_gpu': [],
         'datatype': [],
@@ -76,24 +77,14 @@ def comm_profiler(log_files: list[str]) -> dict:
         'phase': [],
     }
 
-    for log_file in log_files:
+    for (log_file, process) in zip(log_files, processes):
         current_step = None   # current training step
         current_phase = None  # current phase in the training step
 
-        rank = None           # rank in the nccl communicator
-        nranks = None         # total ranks in the nccl communicator
         with open(log_file, "r") as f:
             for line in f:
 
-                ## DETERMINE FIRST NCCL CONFIG
-                if 'ncclCommInitRankConfig' in line:
-                    tokens = line.strip().split()
-                    rank = int(tokens[tokens.index("rank") + 1])
-                    nranks = int(tokens[tokens.index("nranks") + 1])
-                if rank is None:
-                    continue
-
-                ## THEN FIND THE USER-DEFINED TAG
+                ## FIND THE USER-DEFINED TAG
                 # Training tag: >>> --- Step 1 --- Phase Forward
                 if line.startswith(">>> --- Step"):
                     # tokens: ['>>>', '---', 'Step', '1', '---', 'Phase', 'Forward']
@@ -116,9 +107,10 @@ def comm_profiler(log_files: list[str]) -> dict:
                 count = int(tokens[tokens.index("count") + 1])
                 datatype = int(tokens[tokens.index("datatype") + 1])
                 op = int(tokens[tokens.index("op") + 1])
+                nranks = int(re.search(r'nranks=(\d+)', line).group(1))
     
                 coll_dict['timestamp'].append(timestamp)
-                coll_dict['rank'].append(rank)
+                coll_dict['process'].append(process)
                 coll_dict['coll_operation'].append(coll_op)
                 coll_dict['comm_per_gpu'].append(wire_bytes_per_gpu(coll_op, count, datatype, nranks))
                 coll_dict['datatype'].append(datatype)
@@ -152,7 +144,7 @@ def get_comm_results(coll: dict, skip_steps: int=0) -> pd.DataFrame:
     df = df[df['train_step'] > skip_steps].reset_index()
 
     # Group by `train_step` and `phase`
-    df_1gpu = df[df['rank'] == 0].copy()
+    df_1gpu = df[df['process'] == df['process'].unique()[0]].copy()
     df_1gpu = df_1gpu.groupby(['train_step', 'phase'], sort=False)['comm_per_gpu'].sum().reset_index()
 
 
@@ -180,13 +172,13 @@ def plot_comm_profiler(coll: dict, n_display=50) -> None:
     # Check if df is empty 
     assert not df.empty, "No NCCL collective operations found in the log file."
 
-    # Check that every rank has the same number of collective operations
-    counts = df.groupby('rank').size()
-    assert counts.nunique() == 1, f"Mismatch in collective counts per rank: {counts.to_dict()}"
+    # Check that every process has the same number of collective operations
+    counts = df.groupby('process').size()
+    assert counts.nunique() == 1, f"Mismatch in collective counts per process: {counts.to_dict()}"
 
     df_plot = pd.DataFrame()
-    for r in df['rank'].unique():
-        df_plot[f'rank: {r}'] = df[df['rank'] == r].comm_per_gpu.reset_index(drop=True)
+    for r in df['process'].unique():
+        df_plot[f'process: {r}'] = df[df['process'] == r].comm_per_gpu.reset_index(drop=True)
     
     # Build operation labels
     nccldtype = {
@@ -201,17 +193,16 @@ def plot_comm_profiler(coll: dict, n_display=50) -> None:
         8: 'ncclFloat64',
         9: 'ncclBfloat16',
     }
-    rank0 = df[df['rank'] == 0].reset_index(drop=True)
-
+    single_process = df[df['process'] == df['process'].unique()[0]].reset_index(drop=True)
     df_plot['label'] = (
         "Step "
-        + rank0['train_step'].astype(str)
+        + single_process['train_step'].astype(str)
         + " - "
-        + rank0['phase']
+        + single_process['phase']
         + " - "
-        + rank0['coll_operation']
+        + single_process['coll_operation']
         + " ("
-        + rank0['datatype'].map(nccldtype).astype(str)
+        + single_process['datatype'].map(nccldtype).astype(str)
         + ")"
     )
     df_plot = df_plot.set_index('label')
@@ -250,7 +241,7 @@ def plot_comm_profiler(coll: dict, n_display=50) -> None:
     if n_display:
         dfagg.iloc[:n_display].plot.bar(
             figsize=(18, 6), rot=90,
-            title=f'Aggregate Collective Communication Profiler - Total volume: {df[df['rank'] == 0].comm_per_gpu.sum()} Bytes/GPU (first {n_display})',
+            title=f'Aggregate Collective Communication Profiler - Total volume: {df[df['process'] == df['process'].unique()[0]].comm_per_gpu.sum()/1e9:.2f} GB/GPU (first {n_display})',
             ylabel='Bytes',
         )
         plt.tight_layout()
@@ -258,7 +249,7 @@ def plot_comm_profiler(coll: dict, n_display=50) -> None:
         
         dfagg.iloc[-n_display:].plot.bar(
             figsize=(18, 6), rot=90,
-            title=f'Aggregate Collective Communication Profiler - Total volume: {df[df['rank'] == 0].comm_per_gpu.sum()} Bytes/GPU (last {n_display})',
+            title=f'Aggregate Collective Communication Profiler - Total volume: {df[df['process'] == df['process'].unique()[0]].comm_per_gpu.sum()/1e9:.2f} GB/GPU (last {n_display})',
             ylabel='Bytes',
         )
         plt.tight_layout()
@@ -266,7 +257,7 @@ def plot_comm_profiler(coll: dict, n_display=50) -> None:
     else:
         dfagg.plot.bar(
             figsize=(18, 6), rot=90,
-            title=f'Aggregate Collective Communication Profiler - Total volume: {df[df['rank'] == 0].comm_per_gpu.sum()} Bytes/GPU',
+            title=f'Aggregate Collective Communication Profiler - Total volume: {df[df['process'] == df['process'].unique()[0]].comm_per_gpu.sum()/1e9:.2f} GB/GPU',
             ylabel='Bytes',
         )
         plt.tight_layout()
@@ -275,12 +266,12 @@ def plot_comm_profiler(coll: dict, n_display=50) -> None:
     # --- Total communication per step per phase ---
     dfphase = df_plot.copy().reset_index(drop=True)  # vire l'index 'label'
     
-    rank0 = df[df['rank'] == 0].reset_index(drop=True)
+    single_process = df[df['process'] == df['process'].unique()[0]].reset_index(drop=True)
     dfphase['step_phase'] = (
         "Step "
-        + rank0['train_step'].astype(str)
+        + single_process['train_step'].astype(str)
         + " - "
-        + rank0['phase']
+        + single_process['phase']
     )
     dfphase = dfphase.groupby('step_phase', sort=False).sum()
 

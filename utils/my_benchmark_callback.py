@@ -77,7 +77,7 @@ class BenchmarkCallback(pl.Callback):
 
             nccl_log_path = os.environ["NCCL_DEBUG_FILE"]
             nccl_log_path = nccl_log_path.replace("%p", str(os.getpid()))
-            comms_profile = comm_profiler([nccl_log_path])
+            comms_profile = comm_profiler([nccl_log_path], [os.getpid()])
             get_comm_results(comms_profile, skip_steps=self.grad_acc)
 
             # We have the first weight update as warmup
