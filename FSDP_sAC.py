@@ -201,7 +201,7 @@ def main():
     if is_main_process():
         print(f"Model: {model}")
         print(f"Number of parameters: {sum(param.numel() for param in model.parameters())}")
-        print(f'Pre-loop GPU memory usage: {torch.cuda.max_memory_allocated()/2**30} GB')
+        print(f'Pre-loop GPU memory usage: {torch.cuda.max_memory_allocated()/1e9:.2f} GB')
 
 
     # 4. Data processing
@@ -405,7 +405,7 @@ def main():
 
         ## Memory Usage
         memory_usage()
-        print(f'Post-loop GPU memory usage: {torch.cuda.max_memory_allocated()/2**30} GBytes')
+        print(f'Post-loop GPU memory usage: {torch.cuda.max_memory_allocated()/1e9} GB')
 
         ## Optimizer dtype
         if args.display_optimizer_dtype:

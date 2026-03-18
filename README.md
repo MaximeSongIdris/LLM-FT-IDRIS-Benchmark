@@ -117,7 +117,7 @@
 | Median Est. Step Duration | 0.644 s        | 0.496 s        | 0.498 s        | 0.872 s        | 0.669 s        | 0.523 s        |
 | GA                        | 8              | 16             | 16             | 8              | 8              | 16             |
 
-- We avoid using AC.
+- THe best results are given by maximizing the bs/GPU without using AC.
 - In 1D setting, FSDP2 is more efficient than TP or CP, however it is limited by bs/GPU=2.
 - In 2D setting, with a combination of FSDP2 and CP, we benefit both from FSDP's communication efficiency and CP's ability to double the effective batch size per GPU (from 2 to 4), resulting in the highest throughput at 48184 tokens/s, a 12% improvement over the best 1D configuration.
 

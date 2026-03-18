@@ -30,7 +30,7 @@ class BenchmarkCallback(pl.Callback):
 
     def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         if self.rank == 0:
-            print(f'Pre-loop GPU memory usage: {torch.cuda.max_memory_allocated()/2**30:.2f} GB')
+            print(f'Pre-loop GPU memory usage: {torch.cuda.max_memory_allocated()/1e9:.2f} GB')
 
             # Check parameter sharding across devices
             for name, param in pl_module.named_parameters():
@@ -86,4 +86,4 @@ class BenchmarkCallback(pl.Callback):
 
             ## Memory Usage
             memory_usage()
-            print(f'Post-loop GPU memory usage: {torch.cuda.max_memory_allocated()/2**30} GBytes')
+            print(f'Post-loop GPU memory usage: {torch.cuda.max_memory_allocated()/1e9:.2f} GB')

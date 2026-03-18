@@ -143,7 +143,7 @@ def _print_percentile_summary(data: list, name: str) -> None:
         p90 = np.percentile(data, 90)
         p100 = np.max(data)
 
-        print(f">>> {name}: min {p0/1e9:.1f} Go | 10th percentile {p10/1e9:.1f} Go | median {p50/1e9:.1f} Go | 90th percentile {p90/1e9:.1f} Go | max {p100/1e9:.1f} Go")
+        print(f">>> {name}: min {p0/1e9:.1f} GB | 10th percentile {p10/1e9:.1f} GB | median {p50/1e9:.1f} GB | 90th percentile {p90/1e9:.1f} GB | max {p100/1e9:.1f} GB")
     else:
         print(f">>> {name}: insufficient data (n={len(data)})")
 
