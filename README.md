@@ -97,6 +97,7 @@
 ### 3) Intra-Node Parallelism comparison (NeMo) on H100 80 Go (Qwen2.5-7B-Instruct)
 
 - The sharding in FSDP2 on NeMo is done automatically (and may have an optimized sharding) unlike in previous experiences.
+- Parameter sharding is done in the dimension of DP+CP, so even with DP=1, the model is still sharded and requires AllGather operations during forward and backward.
 
 #### 1D efficiency depending on bs
 
@@ -110,18 +111,26 @@
 
 #### Max Throughput (number of input tokens/s) with fixed effective batch size = 64 (GPUs=4)
 
-|                           | 4 fsdp         | 4 tp           | 4 cp           | 2 fsdp 2 tp    | 2 fsdp 2 cp    | 2 tp 2 cp      |
-|---------------------------|----------------|----------------|----------------|----------------|----------------|----------------|
-| Throughput                | 43001 tokens/s | 31470 tokens/s | 31236 tokens/s | 35326 tokens/s | 48184 tokens/s | 30754 tokens/s |
-| bs/GPU                    | 2              | 4              | 4              | 4              | 4              | 4              |
-| Median Est. Step Duration | 0.644 s        | 0.496 s        | 0.498 s        | 0.872 s        | 0.669 s        | 0.523 s        |
-| GA                        | 8              | 16             | 16             | 8              | 8              | 16             |
+|                           | 4 fsdp Pytorch | 4 fsdp         | 4 tp           | 4 cp           | 2 fsdp 2 tp    | 2 fsdp 2 cp    | 2 tp 2 cp      |
+|---------------------------|----------------|----------------|----------------|----------------|----------------|----------------|----------------|
+| Throughput                | 35021 tokens/s | 42951 tokens/s | 31168 tokens/s | 40275 tokens/s | 35139 tokens/s | 48044 tokens/s | 30587 tokens/s |
+| bs/GPU                    | 2              | 2              | 4              | 4              | 4              | 4              | 4              |
+| GA                        | 8              | 8              | 16             | 16             | 8              | 8              | 16             |
+| Median Est. Step Duration | 0.812 s        | 0.644 s        | 0.500 s        | 0.401 s        | 0.879 s        | 0.671 s        | 0.528 s        |
+| Communication Volume Step | 44.1 GB/GPU    | 32.3 GB/GPU    | 34.5 GB/GPU    | 32.3 GB/GPU    | 34.9 GB/GPU    | 32.3 GB/GPU    | 23.4 GB/GPU    |
 
-- THe best results are given by maximizing the bs/GPU without using AC.
+- We are using `FSDP2Strategy` which has options for Context Paralellism (CP) and Tensor Parallelism (TP).
+- The best results are given by maximizing the bs/GPU without using AC.
+- In 1D setting, FSDP2 in NeMo is more efficient than the native PyTorch implementation because it performs the gradient ReduceScatter in half precision rather than full precision, halving the communication volume.
 - In 1D setting, FSDP2 is more efficient than TP or CP, however it is limited by bs/GPU=2.
-- In 2D setting, with a combination of FSDP2 and CP, we benefit both from FSDP's communication efficiency and CP's ability to double the effective batch size per GPU (from 2 to 4), resulting in the highest throughput at 48184 tokens/s, a 12% improvement over the best 1D configuration.
+- CP uses as much communication volume as FSDP2, AllGather on model shards and ReduceScatter on gradients, yet we can't see the communication of K/V for the ring attention. `FSDP2Strategy` shards effectively the model along the dimension of DP and CP, which explains the AllGather on model shards and the ReduceScatter on gradients.
+- In 2D setting, with a combination of FSDP2 and CP, we benefit both from FSDP's communication efficiency and CP's ability to double the batch size per GPU (from 2 to 4), resulting in the highest throughput at 48044 tokens/s, a 12% improvement over the best 1D configuration.
 
-### 4) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
+### 4) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-7B-Instruct)
+
+#### Max Throughput (number of input tokens/s) with fixed effective batch size = 64 (GPUs=64)
+
+### 5) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
 
 ### Issues
 
