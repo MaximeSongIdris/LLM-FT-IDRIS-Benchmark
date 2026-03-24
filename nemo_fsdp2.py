@@ -10,21 +10,47 @@ Source: https://docs.nvidia.com/nemo-framework/user-guide/25.04/automodel/sft.ht
 from argparse import ArgumentParser, BooleanOptionalAction, Namespace
 from math import ceil
 from pathlib import Path
+from typing import Any
 import os
 
 from datasets import DatasetDict, load_dataset
+from lightning.pytorch.utilities.types import STEP_OUTPUT
 from nemo import lightning as nl
 from nemo.automodel.loss import masked_cross_entropy
 from nemo.automodel.misc_utils import calculate_valid_accumulate_grad_batches
 from nemo.collections import llm
 from nemo.collections.llm.gpt.data.hf_dataset import HFDatasetDataModule
 from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
+from torch.profiler import profile, schedule, tensorboard_trace_handler, ProfilerActivity
 from transformers import AutoTokenizer
 import fiddle as fdl
 import lightning.pytorch as pl
 
 from utils import make_sft_collate, BenchmarkCallback
 
+
+class TorchProfilerCallback(pl.Callback):
+    """PyTorch Profiler as a Lightning Callback."""
+    def __init__(self, rank: int):
+        if rank == 0:
+            self.profiler = profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                schedule=schedule(wait=16, warmup=1, active=8, repeat=1),
+                on_trace_ready=tensorboard_trace_handler(f"./profile/"),
+                profile_memory=True,
+                record_shapes=True
+            )
+        else:
+            self.profiler = profile(activities=[])
+
+    def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        self.profiler.start()
+
+    def on_train_batch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", outputs: STEP_OUTPUT, batch: Any, batch_idx: int) -> None:
+        self.profiler.step()
+
+    def on_train_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        self.profiler.stop()
 
 def _get_offload_policy(enable_cpu_offload: bool) -> "CPUOffloadPolicy | None":
     """Return CPU offload policy if enabled, None otherwise."""
@@ -93,6 +119,7 @@ def parse_args() -> Namespace:
     # Benchmarking / debugging arguments
     parser.add_argument('--test', action=BooleanOptionalAction, default=False, help='Run in test mode for a limited number of steps.')
     parser.add_argument('--test-nsteps', type=int, default=100, help='Number of steps to run in test mode.')
+    parser.add_argument('--pytorch-profiler', action=BooleanOptionalAction, default=False, help='Whether to use pytorch profiler.')
 
     # DataLoader related arguments
     parser.add_argument('--dataset-path', type=Path, help='HuggingFaceHub dataset path.')
@@ -305,6 +332,10 @@ def main() -> None:
             grad_acc                                                       # number of batches per epoch / grad_acc = number of weight updates per epoch !
         )
     )
+
+    # Pytorch Profiler
+    if args.pytorch_profiler:
+        callbacks.append(TorchProfilerCallback(rank))
 
     llm.api.finetune(
         model=model,
