@@ -225,3 +225,73 @@ def analyze_overlap_step_breakdown(gpu_step_annotations: list,
         "other": sum(event["dur"] for event in events_by_category["other"]),
         "step_duration": gpu_step_annotations[step_idx]["dur"],
     }
+
+def plot_sequential_vs_overlap(breakdown_seq: dict, breakdown_ovl: dict) -> None:
+    """Compare sequential and overlap execution as grouped bar chart by category."""
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        print("Plotly is not installed. Run: pip install plotly")
+        return None
+
+    categories = [
+        ("cpu_bound", "CPU-bound"),
+        ("cpu_gpu_transfer", "CPU-GPU transfer"),
+        ("compute", "Compute"),
+        ("comm_overhead", "Comm overhead"),
+        ("communication", "Comm-bound"),
+        ("comm_bound", "Comm-bound"),
+        ("other", "Other"),
+    ]
+
+    # Filter categories that have data in at least one breakdown
+    filtered = [(key, label) for key, label in categories
+                if breakdown_seq.get(key, 0) > 0 or breakdown_ovl.get(key, 0) > 0]
+
+    keys = [k for k, _ in filtered]
+    labels = [l for _, l in filtered]
+    unique_labels = list(dict.fromkeys(labels))
+
+    seq_values = [breakdown_seq.get(k, 0) for k in keys if breakdown_seq.get(k, 0) > 0]
+    ovl_values = [breakdown_ovl.get(k, 0) for k in keys if breakdown_ovl.get(k, 0) > 0]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        name=f"Sequential ({breakdown_seq['step_duration']:.1f} ms)",
+        x=unique_labels,
+        y=seq_values,
+        marker_color="#636EFA",
+        text=[f"{v:.1f}" for v in seq_values],
+        textposition='outside',
+    ))
+
+    fig.add_trace(go.Bar(
+        name=f"Overlap ({breakdown_ovl['step_duration']:.1f} ms)",
+        x=unique_labels,
+        y=ovl_values,
+        marker_color="#00CC96",
+        text=[f"{v:.1f}" for v in ovl_values],
+        textposition='outside',
+    ))
+
+    fig.update_layout(
+        barmode='group',
+        title="Sequential vs Overlap Execution",
+        xaxis_title="Category",
+        yaxis=dict(
+            title="Time (ms)",
+            range=[0,350]
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5,
+        ),
+        width=600,
+        height=450,
+    )
+
+    fig.show()
