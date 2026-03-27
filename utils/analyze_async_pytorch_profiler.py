@@ -11,6 +11,49 @@ def compute_overlap(a_start: float, a_end: float, b_start: float, b_end: float) 
     o = inter_end - inter_start 
     return max(0.0, o), inter_start, inter_end
 
+def merge_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Merge overlapping intervals into non-overlapping ones."""
+    if not intervals:
+        return []
+
+    intervals.sort(key=lambda x: x[0])
+    merged = []
+    for start, end in intervals:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    return merged
+
+def compute_nccl_during_compute(compute_events: list, nccl_events: list) -> float:
+    """Compute total NCCL time that overlaps with compute kernels (in ms).
+
+    Merges overlapping NCCL intervals to avoid double-counting when multiple NCCL kernels run simultaneously.
+    """
+
+    # Find all nccl events that overlap with compute events
+    nccl_during_compute = []
+    for comp_ev in compute_events:
+        comp_start = comp_ev["ts"]
+        comp_end = comp_start + comp_ev["dur"]
+
+        for nccl_ev in nccl_events:
+            nccl_start = nccl_ev["ts"]
+            nccl_end = nccl_start + nccl_ev["dur"]
+
+            overlap, inter_start, inter_end = compute_overlap(comp_start, comp_end, nccl_start, nccl_end)
+            if overlap > 0:
+                nccl_during_compute.append((inter_start, inter_end))
+
+    if not nccl_during_compute:
+        return 0.0
+
+    # Merge overlapping intervals
+    merged = merge_intervals(nccl_during_compute)
+
+    return sum(end - start for start, end in merged)
+
 def classify_default_stream_idle_gaps(compute_events: list, nccl_events: list, step_start: float, step_end: float) -> dict:
     """For each idle gap on the compute stream, determine how much is communication-bound vs CPU-bound.
  
@@ -60,13 +103,7 @@ def classify_default_stream_idle_gaps(compute_events: list, nccl_events: list, s
                 nccl_in_gap.append((inter_start, inter_end))
  
         # Merge overlapping NCCL intervals within this gap
-        nccl_in_gap.sort(key=lambda x: x[0])
-        merged = []
-        for start, end in nccl_in_gap:
-            if merged and start <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-            else:
-                merged.append((start, end))
+        merged = merge_intervals(nccl_in_gap)
  
         comm_time = sum(end - start for start, end in merged)
         cpu_time = gap_dur - comm_time
@@ -130,14 +167,16 @@ def parse_overlap_trace(profiler_file: str='profile/xp/jzxh018_3913107.177402618
     # Compute latency between events on GPU
     for step in range(len(default_stream_event_per_step)-1):  # skip the last training step
         step_default_event = default_stream_event_per_step[step]
+        next_step_default_event = default_stream_event_per_step[step+1]
         for i in range(len(step_default_event)-1):
             step_default_event[i]['latency'] = step_default_event[i+1]['ts'] - (step_default_event[i]['ts'] + step_default_event[i]['dur'])
-        step_default_event[-1]['latency'] = gpu_step_annotations[step+1]['ts'] - (step_default_event[-1]['ts'] + step_default_event[-1]['dur'])
+        step_default_event[-1]['latency'] = next_step_default_event[0]['ts'] - (step_default_event[-1]['ts'] + step_default_event[-1]['dur'])
 
         step_comm_event = communication_stream_event_per_step[step]
+        next_step_comm_event = communication_stream_event_per_step[step+1]
         for i in range(len(step_comm_event)-1):
             step_comm_event[i]['latency'] = step_comm_event[i+1]['ts'] - (step_comm_event[i]['ts'] + step_comm_event[i]['dur'])
-        step_comm_event[-1]['latency'] = gpu_step_annotations[step+1]['ts'] - (step_comm_event[-1]['ts'] + step_comm_event[-1]['dur'])
+        step_comm_event[-1]['latency'] = next_step_comm_event[0]['ts'] - (step_comm_event[-1]['ts'] + step_comm_event[-1]['dur'])
 
 
     ## PROCESSING
@@ -159,10 +198,14 @@ def parse_overlap_trace(profiler_file: str='profile/xp/jzxh018_3913107.177402618
 
     return gpu_step_annotations, default_stream_event_per_step, communication_stream_event_per_step
 
+def get_total_comm_step(communication_stream_event_per_step: list, step_idx: int) -> float:
+    """Sum of all NCCL kernel durations for a given step (in ms)."""
+    return sum([event['dur'] for event in communication_stream_event_per_step[step_idx]])
+
 def analyze_overlap_step_breakdown(gpu_step_annotations: list,
                                    default_stream_event_per_step: list,
                                    communication_stream_event_per_step: list,
-                                   step_idx: int = None) -> dict:
+                                   step_idx: int=None) -> dict:
     """Compute time breakdown for a training step with overlap analysis.
 
     Sums event durations by category and classifies idle gaps on the default stream
@@ -207,13 +250,16 @@ def analyze_overlap_step_breakdown(gpu_step_annotations: list,
         events_by_category[categorize_cuda_event(event)].append(event)
 
     print(f"{gpu_step_annotations[step_idx]['name']}:")
-    print(f"  CPU-bound:                               {idle_classification['cpu_bound']:8.1f} ms")
-    print(f"  CPU-GPU transfer:                        {sum(event['dur'] for event in events_by_category['cpu_gpu_transfer']):8.1f} ms")
-    print(f"  Compute (overlapped with communication): {sum(event['dur'] for event in events_by_category['compute']):8.1f} ms")
-    print(f"  Communication overhead:                  {sum(event['dur'] for event in events_by_category['comm_overhead']):8.1f} ms")
-    print(f"  Communication-bound:                     {idle_classification['comm_bound']:8.1f} ms")
-    print(f"  Other:                                   {sum(event['dur'] for event in events_by_category['other']):8.1f} ms")
-    print(f"  STEP TOTAL:                              {gpu_step_annotations[step_idx]['dur']:8.1f} ms")
+    print(f"  CPU-bound:                              {idle_classification['cpu_bound']:8.1f} ms")
+    print(f"  CPU-GPU transfer:                       {sum(event['dur'] for event in events_by_category['cpu_gpu_transfer']):8.1f} ms")
+    print(f"  Compute [1]:                            {sum(event['dur'] for event in events_by_category['compute']):8.1f} ms")
+    print(f"  Communication overhead [1]:             {sum(event['dur'] for event in events_by_category['comm_overhead']):8.1f} ms")
+    print(f"    [1] -> Communication Overlapped [2]: ({compute_nccl_during_compute(default_stream_event_per_step[step_idx],
+                                                                                   communication_stream_event_per_step[step_idx]):8.1f} ms)")
+    print(f"  Communication-bound [2]:                {idle_classification['comm_bound']:8.1f} ms")
+    print(f"    [2] -> Sum of NCCL Kernels:          ({get_total_comm_step(communication_stream_event_per_step, step_idx):8.1f} ms)")
+    print(f"  Other:                                  {sum(event['dur'] for event in events_by_category['other']):8.1f} ms")
+    print(f"  STEP TOTAL:                             {gpu_step_annotations[step_idx]['dur']:8.1f} ms")
 
     return {
         "step": gpu_step_annotations[step_idx]["name"],
@@ -221,7 +267,9 @@ def analyze_overlap_step_breakdown(gpu_step_annotations: list,
         "cpu_gpu_transfer": sum(event["dur"] for event in events_by_category["cpu_gpu_transfer"]),
         "compute": sum(event["dur"] for event in events_by_category["compute"]),
         "comm_overhead": sum(event["dur"] for event in events_by_category["comm_overhead"]),
+        "comm_overlap": compute_nccl_during_compute(default_stream_event_per_step[step_idx], communication_stream_event_per_step[step_idx]),
         "comm_bound": idle_classification["comm_bound"],
+        "total_communication": get_total_comm_step(communication_stream_event_per_step, step_idx),
         "other": sum(event["dur"] for event in events_by_category["other"]),
         "step_duration": gpu_step_annotations[step_idx]["dur"],
     }
@@ -281,7 +329,7 @@ def plot_sequential_vs_overlap(breakdown_seq: dict, breakdown_ovl: dict) -> None
         xaxis_title="Category",
         yaxis=dict(
             title="Time (ms)",
-            range=[0,350]
+            range=[0,max(seq_values+ovl_values)*1.1]
         ),
         legend=dict(
             orientation="h",

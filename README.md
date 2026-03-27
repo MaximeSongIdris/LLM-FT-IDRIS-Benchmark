@@ -117,7 +117,6 @@
 | bs/GPU                    | 2              | 2              | 4              | 4              | 4              | 4              | 4              |
 | GA                        | 8              | 8              | 16             | 16             | 8              | 8              | 16             |
 | Median Est. Step Duration | 0.812 s        | 0.644 s        | 0.500 s        | 0.401 s        | 0.879 s        | 0.671 s        | 0.528 s        |
-| Communication Volume Step | 44.1 GB/GPU    | 32.3 GB/GPU    | 34.5 GB/GPU    | 32.3 GB/GPU    | 34.9 GB/GPU    | 32.3 GB/GPU    | 23.4 GB/GPU    |
 
 - We are using `FSDP2Strategy` which has options for Context Paralellism (CP) and Tensor Parallelism (TP).
 - The best results are given by maximizing the bs/GPU without using AC.
@@ -125,6 +124,30 @@
 - In 1D setting, FSDP2 is more efficient than TP or CP, however it is limited by bs/GPU=2.
 - CP uses as much communication volume as FSDP2, AllGather on model shards and ReduceScatter on gradients, yet we can't see the communication of K/V for the ring attention. `FSDP2Strategy` shards effectively the model along the dimension of DP and CP, which explains the AllGather on model shards and the ReduceScatter on gradients.
 - In 2D setting, with a combination of FSDP2 and CP, we benefit both from FSDP's communication efficiency and CP's ability to double the batch size per GPU (from 2 to 4), resulting in the highest throughput at 48044 tokens/s, a 12% improvement over the best 1D configuration.
+
+| Métrique/STEP              | Sous-Métrique/STEP        | 4 fsdp Pytorch  | 4 fsdp          | 4 tp            | 4 cp            | 2 fsdp 2 tp     | 2 fsdp 2 cp     | 2 tp 2 cp       |
+|----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
+| Median Duration            |                           |                 | **656.0 ms**    | **495.7 ms**    | **424.2 ms**    | **884.0 ms**    | **675.6 ms**    | **535.3 ms**    |
+| Est. Communication Volume  |                           | **44.1 GB/GPU** | **32.3 GB/GPU** | **34.5 GB/GPU** | **32.3 GB/GPU** | **34.9 GB/GPU** | **32.3 GB/GPU** | **23.4 GB/GPU** |
+| Sum of NCCL Kernels (Ovl)  |                           |                 | **138.8 ms**    | **111.8 ms**    | **143.7 ms**    | **551.4 ms**    | **185.5 ms**    | **265.5 ms**    |
+| Comm Elapsed Time          |                           |                 | **138.8 ms**    | **111.8 ms**    | **143.7 ms**    | **509.5 ms**    | **185.5 ms**    | **247.7 ms**    |
+|                            | Comm-Compute Elapsed Time |                 | 124.6 ms        | 0.0 ms          | 102.7 ms        | 260.1 ms        | 169.8 ms        | 99.0 ms         |
+|                            | Comm only Elapsed Time    |                 | 14.2 ms         | 111.8 ms        | 41.0 ms         | 249.4 ms        | 15.7 ms         | 148.7 ms        |
+|                            | Overlap Efficiency        |                 | 89.8%           | 0.0%            | 71.5%           | 51.1%           | 91.5%           | 40.0%           |
+| Effective NVLink Bandwidth |                           |                 | **233 GB/s**    | **309 GB/s**    | **225 GB/s**    | **68 GB/s**     | **174 GB/s**    | **94 GB/s**     |
+| Sum of NCCL Kernels (Seq)  |                           |                 | **108.0 ms**    | **109.4 ms**    | **109.4 ms**    | **359.3 ms**    | **110.1 ms**    | **234.7 ms**    |
+|                            | Gain From Seq to Ovl      |                 | **61.1 ms**     | **X**           | **42.4 ms**     | **57.2 ms**     | **57.2 ms**     | **82.1 ms**     |
+
+- `Median Duration` is given by looking at the pytorch profiler, unlike `Median Est. Step Duration` which is estimated with `torch.cuda.Event`.
+- `Est. Communication Volume` is estimated by parsing NCCL log.
+- `Sum of NCCL Kernels (Ovl)` is given by looking at the total duration of all NCCL kernels when compute overlapping is enable.
+- `Sum of NCCL Kernels (Ovl) > Sum of NCCL Kernels (Seq)` because NCCL kernels run slower when competing with compute kernels for GPU resources (SM contention, memory bandwidth).
+- `Comm-Compute Elapsed Time` is the elapsed time during which a compute kernel and at least 1 nccl kernel exist.
+- `Comm only Elapsed Time` is the elapsed time during which at least 1 nccl kernel exists while no compute kernel is running.
+- `Comm-Compute Elapsed Time + Comm only Elapsed Time` represents the total wall-clock time where at least one NCCL kernel is running. This differs from `Sum of NCCL Kernels` which counts overlapping NCCL kernels multiple times.
+- `Sum of NCCL Kernels (Seq)` is given by looking at the total duration of all NCCL kernels when compute overlapping is disable.
+- `Gain From Seq to Ovl` is the gain from using a fully sequential cuda execution to a parallel compute-comm cuda execution.
+- `4 tp` shows 0.0 ms for `Comm-Compute Elapsed Time`, meaning TP has no compute-comm overlap (all NCCL happens during idle time). This explains why `Gain From Seq to Ovl = X` (no gain).
 
 ### 4) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-7B-Instruct)
 
