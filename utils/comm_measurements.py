@@ -24,7 +24,7 @@ def wire_bytes_per_gpu(coll_op: str, nccl_count: int, datatype: int, nranks: int
         'AllReduce':     1,
         'ReduceScatter': N,
         'AllGather':     N,
-        'AlltoAll':      1,
+        'AlltoAll':      N,
         "Send":          1,
         "Recv":          1,
     }
@@ -69,6 +69,7 @@ def comm_profiler(log_files: list[str], processes: list[int]) -> dict:
         'timestamp': [],
         'process': [],
         'coll_operation': [],
+        'data_volume': [],
         'comm_per_gpu': [],
         'datatype': [],
         'op': [],
@@ -112,6 +113,7 @@ def comm_profiler(log_files: list[str], processes: list[int]) -> dict:
                 coll_dict['timestamp'].append(timestamp)
                 coll_dict['process'].append(process)
                 coll_dict['coll_operation'].append(coll_op)
+                coll_dict['data_volume'].append(count)
                 coll_dict['comm_per_gpu'].append(wire_bytes_per_gpu(coll_op, count, datatype, nranks))
                 coll_dict['datatype'].append(datatype)
                 coll_dict['op'].append(op)
