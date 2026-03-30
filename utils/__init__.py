@@ -1,5 +1,5 @@
 from .ac_handler import apply_fsdp_checkpointing
-from .analyze_sync_pytorch_profiler import parse_sequential_trace, analyze_sequential_step_breakdown
+from .analyze_sync_pytorch_profiler import parse_sequential_trace, analyze_sequential_step_breakdown, wire_bytes_per_gpu_from_pytorch_profiler
 from .analyze_async_pytorch_profiler import parse_overlap_trace, analyze_overlap_step_breakdown, plot_sequential_vs_overlap
 from .chrono import TrainingChronometer
 from .comm_measurements import comm_profiler, get_comm_results, plot_comm_profiler

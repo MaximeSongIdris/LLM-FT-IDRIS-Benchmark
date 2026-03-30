@@ -57,6 +57,36 @@ def categorize_cuda_event(event: dict) -> str:
     else:
         return "other"
 
+def wire_bytes_per_gpu_from_pytorch_profiler(coll_op: str, count: int, dtype: str, nranks: int) -> float:
+    """Estimate the number of bytes transferred per GPU for a given NCCL collective.
+
+    Adapted for PyTorch profiler output.
+
+    Source: https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md#bandwidth
+    """
+    N = nranks
+
+    # Factor to convert count to total data involved in the collective
+    count_factor = {
+        'allreduce': 1,
+        '_allgather_base': N,
+        '_reduce_scatter_base': N,
+    }
+
+    # Convert element counts to bytes
+    dtype_size = {
+        'BFloat16': 2,
+    }
+
+    # Ratio between size of the data involved in the collective and the average volume of data transfer per GPU
+    bus_bandwidth_factor = {
+        'allreduce': 2 * (N - 1) / N,
+        '_allgather_base': (N - 1) / N,
+        '_reduce_scatter_base': (N - 1) / N,
+    }
+
+    return count * count_factor[coll_op] * dtype_size[dtype] * bus_bandwidth_factor[coll_op]
+
 def parse_sequential_trace(profiler_file: str='profile/xp/jzxh117_870000.1773996581193469969.pt.trace.json') -> tuple[list, list]:
     """Parse a PyTorch profiler trace JSON and extract per-step GPU events.
 
