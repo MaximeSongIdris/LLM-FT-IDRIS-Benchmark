@@ -1,3 +1,4 @@
+from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -52,6 +53,43 @@ def wire_bytes_per_gpu(coll_op: str, nccl_count: int, datatype: int, nranks: int
     }
 
     return nccl_count * count_factor[coll_op] * datatype_factor[datatype] * bus_bandwidth_factor[coll_op]
+
+def parse_nccl_fabric(log_file: str) -> dict:
+    comms = defaultdict(lambda: {
+        "nranks": None,
+        "nnodes": None,
+        "fab": set(),
+    })
+
+    with open(log_file, "r") as f:
+        for line in f:
+
+            m = re.search(
+                r"ncclCommInitRankConfig comm (0x\w+) rank 0 nranks (\d+).*Init START",
+                line,
+            )
+            if m:
+                comms[m.group(1)]["nranks"] = int(m.group(2))
+                continue
+
+            m = re.search(r"comm (0x\w+).*nNodes (\d+)", line)
+            if m:
+                comms[m.group(1)]["nnodes"] = int(m.group(2))
+                continue
+
+            if "via NET/" in line or "via P2P/CUMEM" in line:
+                handle = list(comms)[-1] if comms else None
+                if handle is None:
+                    continue
+                if "via P2P/CUMEM" in line:
+                    comms[handle]["fab"].add("NVLink")
+                else:
+                    # extract whatever comes after NET/ e.g. IB, IBext_v10, OPA, ...
+                    m = re.search(r"via NET/(\w+)", line)
+                    if m:
+                        comms[handle]["fab"].add(m.group(1))
+
+    return dict(comms)
 
 def comm_profiler(log_files: list[str], processes: list[int]) -> dict:
     """

@@ -254,8 +254,7 @@ def analyze_overlap_step_breakdown(gpu_step_annotations: list,
     print(f"  CPU-GPU transfer:                       {sum(event['dur'] for event in events_by_category['cpu_gpu_transfer']):8.1f} ms")
     print(f"  Compute [1]:                            {sum(event['dur'] for event in events_by_category['compute']):8.1f} ms")
     print(f"  Communication overhead [1]:             {sum(event['dur'] for event in events_by_category['comm_overhead']):8.1f} ms")
-    print(f"    [1] -> Communication Overlapped [2]: ({compute_nccl_during_compute(default_stream_event_per_step[step_idx],
-                                                                                   communication_stream_event_per_step[step_idx]):8.1f} ms)")
+    print(f"    [1] -> Communication Overlapped [2]: ({compute_nccl_during_compute(default_stream_event_per_step[step_idx], communication_stream_event_per_step[step_idx]):8.1f} ms)")
     print(f"  Communication-bound [2]:                {idle_classification['comm_bound']:8.1f} ms")
     print(f"    [2] -> Sum of NCCL Kernels:          ({get_total_comm_step(communication_stream_event_per_step, step_idx):8.1f} ms)")
     print(f"  Other:                                  {sum(event['dur'] for event in events_by_category['other']):8.1f} ms")
