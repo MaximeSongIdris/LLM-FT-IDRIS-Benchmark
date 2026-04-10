@@ -55,39 +55,62 @@ def wire_bytes_per_gpu(coll_op: str, nccl_count: int, datatype: int, nranks: int
     return nccl_count * count_factor[coll_op] * datatype_factor[datatype] * bus_bandwidth_factor[coll_op]
 
 def parse_nccl_fabric(log_file: str) -> dict:
+    """
+    Parse NCCL debug log to extract communicator fabric information.
+
+    Analyzes NCCL_DEBUG=INFO logs to identify which transport fabrics
+    (NVLink, InfiniBand, etc.) are used by each NCCL communicator.
+    """
     comms = defaultdict(lambda: {
         "nranks": None,
         "nnodes": None,
+        "max_bw_gpu_to_gpu": None,
         "fab": set(),
     })
 
+    current_comm = None
     with open(log_file, "r") as f:
         for line in f:
-
+            # Detect Init START - begin tracking this communicator
             m = re.search(
-                r"ncclCommInitRankConfig comm (0x\w+) rank 0 nranks (\d+).*Init START",
+                r"ncclCommInitRankConfig comm (0x\w+) rank \d+ nranks (\d+).*Init START",
                 line,
             )
             if m:
-                comms[m.group(1)]["nranks"] = int(m.group(2))
+                current_comm = m.group(1)
+                comms[current_comm]["nranks"] = int(m.group(2))
                 continue
 
+            # Detect Init COMPLETE - stop tracking this communicator
+            if current_comm and "Init COMPLETE" in line and current_comm in line:
+                current_comm = None
+                continue
+
+            # Only parse if we're between Init START and Init COMPLETE
+            if current_comm is None:
+                continue
+
+            # Extract nNodes
             m = re.search(r"comm (0x\w+).*nNodes (\d+)", line)
-            if m:
-                comms[m.group(1)]["nnodes"] = int(m.group(2))
+            if m and m.group(1) == current_comm:
+                comms[current_comm]["nnodes"] = int(m.group(2))
                 continue
 
-            if "via NET/" in line or "via P2P/CUMEM" in line:
-                handle = list(comms)[-1] if comms else None
-                if handle is None:
-                    continue
-                if "via P2P/CUMEM" in line:
-                    comms[handle]["fab"].add("NVLink")
-                else:
-                    # extract whatever comes after NET/ e.g. IB, IBext_v10, OPA, ...
-                    m = re.search(r"via NET/(\w+)", line)
-                    if m:
-                        comms[handle]["fab"].add(m.group(1))
+            # Extract maxBw
+            m = re.search(r"=== System : maxBw ([\d.]+) totalBw [\d.]+ ===", line)
+            if m:
+                comms[current_comm]["max_bw_gpu_to_gpu"] = float(m.group(1))
+                continue
+
+            # Detect NVLink in topology (+ NVL[bw] - GPU/...)
+            if re.search(r"\+ NVL\[[\d.]+\] - GPU/", line):
+                comms[current_comm]["fab"].add("NVLink")
+                continue
+
+            # Detect Network in topology (+ NET[bw] - NET/...)
+            if re.search(r"\+ NET\[[\d.]+\] - NET/", line):
+                comms[current_comm]["fab"].add("Network")
+                continue
 
     return dict(comms)
 
@@ -111,6 +134,7 @@ def comm_profiler(log_files: list[str], processes: list[int]) -> dict:
         'comm_per_gpu': [],
         'datatype': [],
         'op': [],
+        'fab': [],
         'nranks': [],
         'train_step': [],
         'phase': [],
@@ -120,6 +144,7 @@ def comm_profiler(log_files: list[str], processes: list[int]) -> dict:
         current_step = None   # current training step
         current_phase = None  # current phase in the training step
 
+        comms_info = parse_nccl_fabric(log_file)
         with open(log_file, "r") as f:
             for line in f:
 
@@ -146,6 +171,7 @@ def comm_profiler(log_files: list[str], processes: list[int]) -> dict:
                 count = int(tokens[tokens.index("count") + 1])
                 datatype = int(tokens[tokens.index("datatype") + 1])
                 op = int(tokens[tokens.index("op") + 1])
+                communicator = tokens[tokens.index("comm") + 1]
                 nranks = int(re.search(r'nranks=(\d+)', line).group(1))
     
                 coll_dict['timestamp'].append(timestamp)
@@ -155,6 +181,7 @@ def comm_profiler(log_files: list[str], processes: list[int]) -> dict:
                 coll_dict['comm_per_gpu'].append(wire_bytes_per_gpu(coll_op, count, datatype, nranks))
                 coll_dict['datatype'].append(datatype)
                 coll_dict['op'].append(op)
+                coll_dict['fab'].append(frozenset(comms_info[communicator]['fab']))
                 coll_dict['nranks'].append(nranks)
                 coll_dict['train_step'].append(current_step)
                 coll_dict['phase'].append(current_phase)
@@ -179,33 +206,65 @@ def _print_percentile_summary(data: list, name: str) -> None:
     else:
         print(f">>> {name}: insufficient data (n={len(data)})")
 
-def get_comm_results(coll: dict, skip_steps: int=0) -> pd.DataFrame:
+def get_comm_results(coll: dict, skip_steps: int=0) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Aggregate NCCL communication volumes by phase and transport fabric.
+
+    Processes raw NCCL communication measurements to compute per-step
+    communication volumes, grouped by training phase and by transport
+    fabric (NVLink, InfiniBand, etc.).
+
+    Note:
+        - Only processes data from a single GPU to avoid double-counting
+        - Prints percentile summaries for each phase and fabric
+        - Missing values (phases/fabrics not present in some steps) are filled with 0
+    """
     df = pd.DataFrame(coll)
     df = df[df['train_step'] > skip_steps].reset_index()
+    df_1gpu = df[df['process'] == df['process'].unique()[0]].copy()
 
     # Group by `train_step` and `phase`
-    df_1gpu = df[df['process'] == df['process'].unique()[0]].copy()
-    df_1gpu = df_1gpu.groupby(['train_step', 'phase'], sort=False)['comm_per_gpu'].sum().reset_index()
+    df_1gpu_per_phase = df_1gpu.groupby(['train_step', 'phase'], sort=False)['comm_per_gpu'].sum().reset_index()
 
+    # Pivot: colonnes = phases, index = train_step, valeurs = comm_per_gpu
+    pivot = df_1gpu_per_phase.pivot(
+        index='train_step',
+        columns='phase',
+        values='comm_per_gpu'
+    ).fillna(0)  # Remplir les valeurs manquantes avec 0
 
-    # Communication volumes estimation
-    phases = df_1gpu['phase'].unique()
-    phase_volumes = {}
-    for phase in phases:
-        phase_volumes[phase] = df_1gpu[df_1gpu['phase'] == phase]['comm_per_gpu'].tolist()
-        _print_percentile_summary(phase_volumes[phase], f"{phase} communication volume per step")
+    # Communication volumes estimation per phase
+    for phase in pivot.columns:
+        _print_percentile_summary(pivot[phase].tolist(), f"{phase} communication volume per step")
 
     # Total communication volumes estimation
-    min_len = min(len(v) for v in phase_volumes.values())
-    comm_vol_step = [
-        sum(phase_volumes[phase][i] for phase in phases)
-        for i in range(min_len)
-    ]
+    comm_vol_step = pivot.sum(axis=1).tolist()
     _print_percentile_summary(comm_vol_step, "Total communication volume per step")
 
-    return df_1gpu
 
-def plot_comm_profiler(coll: dict, n_display=50) -> None: 
+    # Group by `train_step` and `fab`
+    df_1gpu_per_communicator = df_1gpu.groupby(['train_step', 'fab'], sort=False)['comm_per_gpu'].sum().reset_index()
+
+    # Pivot: colonnes = fab, index = train_step
+    pivot_fab = df_1gpu_per_communicator.pivot(
+        index='train_step',
+        columns='fab',
+        values='comm_per_gpu'
+    ).fillna(0)
+
+    # Communication volumes estimation per fabrics used
+    for fab in pivot_fab.columns:
+        _print_percentile_summary(pivot_fab[fab].tolist(), f"{fab} communication volume per step")
+
+    return pivot, pivot_fab
+
+def plot_comm_profiler(coll: dict, n_display=50) -> None:
+    """Visualize NCCL collective communication patterns across training steps.
+
+    Generates multiple bar plots to analyze communication volumes:
+    1. Per-operation breakdown
+    2. Aggregate communication by operation type
+    3. Total communication per step and phase
+    """
 
     df = pd.DataFrame(coll)
 
