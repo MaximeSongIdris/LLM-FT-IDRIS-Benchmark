@@ -126,7 +126,7 @@ def classify_default_stream_idle_gaps(compute_events: list, nccl_events: list, s
         "gaps": gap_details,
     }
 
-def parse_overlap_trace(profiler_file: str='profile/xp/jzxh018_3913107.1774026182903860725.pt.trace.json') -> tuple[list, list, list]:
+def parse_overlap_trace(profiler_file: str='profile/xp/jzxh018_3913107.1774026182903860725.pt.trace.json') -> tuple[dict, dict, dict]:
     """Parse a PyTorch profiler trace JSON and extract per-step GPU events.
 
     Reads the Chrome Trace format exported by torch.profiler, identifies training steps via gpu_user_annotation events, 
@@ -138,59 +138,63 @@ def parse_overlap_trace(profiler_file: str='profile/xp/jzxh018_3913107.177402618
     with open(profiler_file, "r") as f:
         trace = json.load(f)
     
-    
+
     ## GET STEP DURATION
     gpu_step_annotations = get_gpu_step_info_from_trace(trace)
+    train_steps = list(gpu_step_annotations.keys())
 
 
     ## GET EVENTS PER STEP
-    ts_per_step = [event['ts'] for event in gpu_step_annotations]
+    ts_per_step = {train_step: event['ts'] for train_step, event in gpu_step_annotations.items()}
 
     # Categorize compute stream events per STEP and NCCL events per STEP
-    default_stream_event_per_step = [[] for event in gpu_step_annotations]
-    communication_stream_event_per_step = [[] for event in gpu_step_annotations]
+    default_stream_event_per_step = {step: [] for step in train_steps}
+    communication_stream_event_per_step = {step: [] for step in train_steps}
     for event in trace["traceEvents"]:
         if event.get("args", {}).get("stream", -1) == 7 and event.get("cat", "") in ["kernel", "gpu_memcpy", "gpu_memset"]:
-            idx = max((i for i, v in enumerate(ts_per_step) if event['ts'] >= v), default=-1)
-            if idx != -1:
-                default_stream_event_per_step[idx].append(event)
+            step = max((train_step for train_step, ts_step in ts_per_step.items() if event['ts'] >= ts_step), default=None)
+            if step != None:
+                default_stream_event_per_step[step].append(event)
         elif event.get("args", {}).get("stream", -1) != -1 and event.get("cat", "") == "kernel" and "nccl" in event.get("name", ""):
-            idx = max((i for i, v in enumerate(ts_per_step) if event['ts'] >= v), default=-1)
-            if idx != -1:
-                communication_stream_event_per_step[idx].append(event)
+            step = max((train_step for train_step, ts_step in ts_per_step.items() if event['ts'] >= ts_step), default=None)
+            if step != None:
+                communication_stream_event_per_step[step].append(event)
 
     # Sort by events order
-    for (default_stream_event, comm_stream_event) in zip(default_stream_event_per_step, communication_stream_event_per_step):
-        default_stream_event.sort(key=lambda x: x['ts'])
-        comm_stream_event.sort(key=lambda x: x['ts'])
+    for step in train_steps:
+        default_stream_event_per_step[step].sort(key=lambda x: x['ts'])
+        communication_stream_event_per_step[step].sort(key=lambda x: x['ts'])
 
     # Compute latency between events on GPU
-    for step in range(len(default_stream_event_per_step)-1):  # skip the last training step
+    for i, step in enumerate(train_steps[:-1]):  # skip the last training step
+        next_step = train_steps[i + 1]
+
         step_default_event = default_stream_event_per_step[step]
-        next_step_default_event = default_stream_event_per_step[step+1]
-        for i in range(len(step_default_event)-1):
-            step_default_event[i]['latency'] = step_default_event[i+1]['ts'] - (step_default_event[i]['ts'] + step_default_event[i]['dur'])
+        next_step_default_event = default_stream_event_per_step[next_step]
+        for j in range(len(step_default_event) - 1):
+            step_default_event[j]['latency'] = step_default_event[j + 1]['ts'] - (step_default_event[j]['ts'] + step_default_event[j]['dur'])
         step_default_event[-1]['latency'] = next_step_default_event[0]['ts'] - (step_default_event[-1]['ts'] + step_default_event[-1]['dur'])
 
         step_comm_event = communication_stream_event_per_step[step]
-        next_step_comm_event = communication_stream_event_per_step[step+1]
-        for i in range(len(step_comm_event)-1):
-            step_comm_event[i]['latency'] = step_comm_event[i+1]['ts'] - (step_comm_event[i]['ts'] + step_comm_event[i]['dur'])
+        next_step_comm_event = communication_stream_event_per_step[next_step]
+        for j in range(len(step_comm_event) - 1):
+            step_comm_event[j]['latency'] = step_comm_event[j + 1]['ts'] - (step_comm_event[j]['ts'] + step_comm_event[j]['dur'])
         step_comm_event[-1]['latency'] = next_step_comm_event[0]['ts'] - (step_comm_event[-1]['ts'] + step_comm_event[-1]['dur'])
 
 
     ## PROCESSING
     # Remove last step
-    gpu_step_annotations = gpu_step_annotations[:-1]
-    default_stream_event_per_step = default_stream_event_per_step[:-1]
-    communication_stream_event_per_step = communication_stream_event_per_step[:-1]
+    last_step = train_steps[-1]
+    del gpu_step_annotations[last_step]
+    del default_stream_event_per_step[last_step]
+    del communication_stream_event_per_step[last_step]
 
     # Convert microseconds to millisecond
-    for event in gpu_step_annotations:
+    for event in gpu_step_annotations.values():
         event['ts'] = event['ts'] / 1000
         event['dur'] = event['dur'] / 1000
 
-    for step_event in default_stream_event_per_step + communication_stream_event_per_step:
+    for step_event in list(default_stream_event_per_step.values()) + list(communication_stream_event_per_step.values()):
         for event in step_event:
             event['ts'] = event['ts'] / 1000
             event['dur'] = event['dur'] / 1000
@@ -198,14 +202,14 @@ def parse_overlap_trace(profiler_file: str='profile/xp/jzxh018_3913107.177402618
 
     return gpu_step_annotations, default_stream_event_per_step, communication_stream_event_per_step
 
-def get_total_comm_step(communication_stream_event_per_step: list, step_idx: int) -> float:
+def get_total_comm_step(communication_stream_event_per_step: dict, train_step: int) -> float:
     """Sum of all NCCL kernel durations for a given step (in ms)."""
-    return sum([event['dur'] for event in communication_stream_event_per_step[step_idx]])
+    return sum([event['dur'] for event in communication_stream_event_per_step[train_step]])
 
-def analyze_overlap_step_breakdown(gpu_step_annotations: list,
-                                   default_stream_event_per_step: list,
-                                   communication_stream_event_per_step: list,
-                                   step_idx: int=None) -> dict:
+def analyze_overlap_step_breakdown(gpu_step_annotations: dict,
+                                   default_stream_event_per_step: dict,
+                                   communication_stream_event_per_step: dict,
+                                   train_step: int=None) -> dict:
     """Compute time breakdown for a training step with overlap analysis.
 
     Sums event durations by category and classifies idle gaps on the default stream
@@ -223,18 +227,22 @@ def analyze_overlap_step_breakdown(gpu_step_annotations: list,
         comm_bound:       Idle time on default stream overlapped by NCCL.
         other:            GPU-to-GPU memcpy, memset, etc.
     """
+    train_steps = list(gpu_step_annotations.keys())
+
     # Select step with median duration if not specified
-    if step_idx is None:
-        median_dur = np.median([annotation["dur"] for annotation in gpu_step_annotations])
-        step_idx = int(np.argmin([abs(annotation["dur"] - median_dur) for annotation in gpu_step_annotations]))
-    
+    if train_step is None:
+        durations = [gpu_step_annotations[s]['dur'] for s in train_steps]
+        median_dur = np.median(durations)
+        idx = int(np.argmin([abs(d - median_dur) for d in durations]))
+        train_step = train_steps[idx]  # convert index to actual train_step key
+
     # Classify idle gaps in default stream
-    step_start = gpu_step_annotations[step_idx]["ts"]
-    step_end = step_start + gpu_step_annotations[step_idx]["dur"]
+    step_start = gpu_step_annotations[train_step]["ts"]
+    step_end = step_start + gpu_step_annotations[train_step]["dur"]
     
     idle_classification = classify_default_stream_idle_gaps(
-        compute_events=default_stream_event_per_step[step_idx],
-        nccl_events=communication_stream_event_per_step[step_idx],
+        compute_events=default_stream_event_per_step[train_step],
+        nccl_events=communication_stream_event_per_step[train_step],
         step_start=step_start,
         step_end=step_end,
     )
@@ -246,32 +254,132 @@ def analyze_overlap_step_breakdown(gpu_step_annotations: list,
         "comm_overhead": [],
         "other": [],
     }
-    for event in default_stream_event_per_step[step_idx]:
+    for event in default_stream_event_per_step[train_step]:
         events_by_category[categorize_cuda_event(event)].append(event)
 
-    print(f"{gpu_step_annotations[step_idx]['name']}:")
+    print(f"{gpu_step_annotations[train_step]['name']}:")
     print(f"  CPU-bound:                              {idle_classification['cpu_bound']:8.1f} ms")
     print(f"  CPU-GPU transfer:                       {sum(event['dur'] for event in events_by_category['cpu_gpu_transfer']):8.1f} ms")
     print(f"  Compute [1]:                            {sum(event['dur'] for event in events_by_category['compute']):8.1f} ms")
     print(f"  Communication overhead [1]:             {sum(event['dur'] for event in events_by_category['comm_overhead']):8.1f} ms")
-    print(f"    [1] -> Communication Overlapped [2]: ({compute_nccl_during_compute(default_stream_event_per_step[step_idx], communication_stream_event_per_step[step_idx]):8.1f} ms)")
+    print(f"    [1] -> Communication Overlapped [2]: ({compute_nccl_during_compute(default_stream_event_per_step[train_step], communication_stream_event_per_step[train_step]):8.1f} ms)")
     print(f"  Communication-bound [2]:                {idle_classification['comm_bound']:8.1f} ms")
-    print(f"    [2] -> Sum of NCCL Kernels:          ({get_total_comm_step(communication_stream_event_per_step, step_idx):8.1f} ms)")
+    print(f"    [2] -> Sum of NCCL Kernels:          ({get_total_comm_step(communication_stream_event_per_step, train_step):8.1f} ms)")
     print(f"  Other:                                  {sum(event['dur'] for event in events_by_category['other']):8.1f} ms")
-    print(f"  STEP TOTAL:                             {gpu_step_annotations[step_idx]['dur']:8.1f} ms")
+    print(f"  STEP TOTAL:                             {gpu_step_annotations[train_step]['dur']:8.1f} ms")
 
     return {
-        "step": gpu_step_annotations[step_idx]["name"],
+        "step": gpu_step_annotations[train_step]["name"],
         "cpu_bound": idle_classification["cpu_bound"],
         "cpu_gpu_transfer": sum(event["dur"] for event in events_by_category["cpu_gpu_transfer"]),
         "compute": sum(event["dur"] for event in events_by_category["compute"]),
         "comm_overhead": sum(event["dur"] for event in events_by_category["comm_overhead"]),
-        "comm_overlap": compute_nccl_during_compute(default_stream_event_per_step[step_idx], communication_stream_event_per_step[step_idx]),
+        "comm_overlap": compute_nccl_during_compute(default_stream_event_per_step[train_step], communication_stream_event_per_step[train_step]),
         "comm_bound": idle_classification["comm_bound"],
-        "total_communication": get_total_comm_step(communication_stream_event_per_step, step_idx),
+        "total_communication": get_total_comm_step(communication_stream_event_per_step, train_step),
         "other": sum(event["dur"] for event in events_by_category["other"]),
-        "step_duration": gpu_step_annotations[step_idx]["dur"],
+        "step_duration": gpu_step_annotations[train_step]["dur"],
     }
+
+def classify_pt_events_by_fabric(gpu_step_annotations: dict,
+                                 communication_stream_event_per_step: dict,
+                                 comms_profile: dict,
+                                 train_step: int=None) -> dict:
+    """Classify PyTorch profiler NCCL events by network fabric and compute total duration per fabric.
+
+    Matches PyTorch profiler NCCL events to NCCL log events based on collective operation, element count, datatype, and group size.
+    Then classifies each event by the fabric (NVLink, Network, etc.) used by its corresponding NCCL communicator.
+    """
+    train_steps = list(gpu_step_annotations.keys())
+
+    # Select step with median duration if not specified
+    if train_step is None:
+        durations = [gpu_step_annotations[s]['dur'] for s in train_steps]
+        median_dur = np.median(durations)
+        idx = int(np.argmin([abs(d - median_dur) for d in durations]))
+        train_step = train_steps[idx]  # convert index to actual train_step key
+
+    coll_map = {
+        'AllReduce': 'allreduce',
+        'ReduceScatter': '_reduce_scatter_base',
+        'AllGather': '_allgather_base'
+    }
+    dtype_map = {
+        9: 'BFloat16'
+    }
+
+    # Filter NCCL events for target step
+    step_mask = [step == train_step for step in comms_profile['train_step']]
+    nccl_coll_ops = [x for x, keep in zip(comms_profile['coll_operation'], step_mask) if keep]
+    nccl_nelems = [x for x, keep in zip(comms_profile['data_volume'], step_mask) if keep]
+    nccl_dtypes = [x for x, keep in zip(comms_profile['datatype'], step_mask) if keep]
+    nccl_nranks = [x for x, keep in zip(comms_profile['nranks'], step_mask) if keep]
+    nccl_fabrics = [x for x, keep in zip(comms_profile['fab'], step_mask) if keep]
+    nccl_comm_per_gpu = [x for x, keep in zip(comms_profile['comm_per_gpu'], step_mask) if keep]
+
+    # Extract PyTorch event info
+    pt_events = communication_stream_event_per_step[train_step]
+    pt_coll_ops = [e['args']['Collective name'] for e in pt_events]
+    pt_in_nelems = [e['args']['In msg nelems'] for e in pt_events]
+    pt_out_nelems = [e['args']['Out msg nelems'] for e in pt_events]
+    pt_nelems = [min(i, o) for i, o in zip(pt_in_nelems, pt_out_nelems)]
+    pt_dtypes = [e['args']['dtype'] for e in pt_events]
+    pt_nranks = [e['args']['Group size'] for e in pt_events]
+
+    def events_match(pt_idx, nccl_idx):
+        return (
+            pt_coll_ops[pt_idx] == coll_map[nccl_coll_ops[nccl_idx]]
+            and pt_nelems[pt_idx] == nccl_nelems[nccl_idx]
+            and pt_dtypes[pt_idx] == dtype_map[nccl_dtypes[nccl_idx]]
+            and pt_nranks[pt_idx] == nccl_nranks[nccl_idx]
+        )
+
+    # Match PT -> NCCL
+    pt_to_nccl = [None] * len(pt_events)
+    unmatched_nccl = []
+    pt_idx = 0
+
+    for nccl_idx in range(len(nccl_coll_ops)):
+        for skipped in unmatched_nccl:
+            if pt_idx >= len(pt_events):
+                break
+            if events_match(pt_idx, skipped):
+                pt_to_nccl[pt_idx] = skipped
+                unmatched_nccl.remove(skipped)
+                pt_idx += 1
+
+        if pt_idx >= len(pt_events):
+            break
+        if events_match(pt_idx, nccl_idx):
+            pt_to_nccl[pt_idx] = nccl_idx
+            pt_idx += 1
+        else:
+            unmatched_nccl.append(nccl_idx)
+
+    # Classify by fabric and sum durations
+    metrics_by_fabric = {}
+
+    for pt_idx, pt_event in enumerate(pt_events):
+        nccl_idx = pt_to_nccl[pt_idx]
+
+        fab = nccl_fabrics[nccl_idx]
+        bytes_per_gpu = nccl_comm_per_gpu[nccl_idx]
+
+        # Initialize fabric entry
+        if fab not in metrics_by_fabric:
+            metrics_by_fabric[fab] = {'duration_ms': 0.0, 'bytes': 0.0, 'bandwidth_gbps': 0.0}
+
+        # Accumulate duration and bytes
+        metrics_by_fabric[fab]['duration_ms'] += pt_event['dur']
+        metrics_by_fabric[fab]['bytes'] += bytes_per_gpu
+
+    # Compute bandwidth for each fabric
+    for fab, metrics in metrics_by_fabric.items():
+        if metrics['duration_ms'] > 0:
+            # bandwidth = bytes / time -> GB/s = bytes / (ms * 1e6)
+            metrics['bandwidth_gbps'] = metrics['bytes'] / (metrics['duration_ms'] * 1e6)
+
+    return metrics_by_fabric
 
 def plot_sequential_vs_overlap(breakdown_seq: dict, breakdown_ovl: dict) -> None:
     """Compare sequential and overlap execution as grouped bar chart by category."""
