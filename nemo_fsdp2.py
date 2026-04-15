@@ -22,12 +22,37 @@ from nemo.collections import llm
 from nemo.collections.llm.gpt.data.hf_dataset import HFDatasetDataModule
 from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 from torch.profiler import profile, schedule, tensorboard_trace_handler, ProfilerActivity
+from torch.utils.flop_counter import FlopCounterMode
 from transformers import AutoTokenizer
 import fiddle as fdl
 import lightning.pytorch as pl
 
 from utils import make_sft_collate, BenchmarkCallback
 
+
+class FlopCounterCallback(pl.Callback):
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.flops_list = []
+        self.ctx = None
+
+    def on_train_batch_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", batch: Any, batch_idx: int) -> None:
+        if self.enabled:
+            self.ctx = FlopCounterMode(display=False)
+            self.ctx.__enter__()
+
+    def on_train_batch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", outputs: STEP_OUTPUT, batch: Any, batch_idx: int) -> None:
+        if self.enabled and self.ctx:
+            import torch
+            self.ctx.__exit__(None, None, None)
+            self.flops_list.append(self.ctx.get_total_flops())
+            self.ctx = None
+            torch.cuda.empty_cache()  # free unused vRAM to reduce risks of CUDA OOM
+
+    def on_train_end(self, trainer, pl_module):
+        if self.enabled and self.flops_list:
+            import numpy as np
+            print(f"Median FLOPs/step: {np.median(self.flops_list)/1e12:.1f} TFLOPs")
 
 class TorchProfilerCallback(pl.Callback):
     """PyTorch Profiler as a Lightning Callback."""
@@ -119,6 +144,7 @@ def parse_args() -> Namespace:
     # Benchmarking / debugging arguments
     parser.add_argument('--test', action=BooleanOptionalAction, default=False, help='Run in test mode for a limited number of steps.')
     parser.add_argument('--test-nsteps', type=int, default=100, help='Number of steps to run in test mode.')
+    parser.add_argument('--enable-flop-counter', action=BooleanOptionalAction, default=False, help='Compute FLOPs per step.')
     parser.add_argument('--pytorch-profiler', action=BooleanOptionalAction, default=False, help='Whether to use pytorch profiler.')
 
     # DataLoader related arguments
@@ -332,6 +358,9 @@ def main() -> None:
             grad_acc                                                       # number of batches per epoch / grad_acc = number of weight updates per epoch !
         )
     )
+
+    # FLOPs counting
+    callbacks.append(FlopCounterCallback(enabled=args.enable_flop_counter and rank==0))
 
     # Pytorch Profiler
     if args.pytorch_profiler:

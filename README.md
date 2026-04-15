@@ -123,7 +123,7 @@
 - In 1D setting, FSDP2 in NeMo is more efficient than the native PyTorch implementation because it performs the gradient ReduceScatter in half precision rather than full precision, halving the communication volume.
 - In 1D setting, FSDP2 is more efficient than TP or CP, however it is limited by bs/GPU=2.
 - CP uses as much communication volume as FSDP2, AllGather on model shards and ReduceScatter on gradients, yet we can't see the communication of K/V for the ring attention. `FSDP2Strategy` shards effectively the model along the dimension of DP and CP, which explains the AllGather on model shards and the ReduceScatter on gradients.
-- In 2D setting, with a combination of FSDP2 and CP, we benefit both from FSDP's communication efficiency and CP's ability to double the batch size per GPU (from 2 to 4), resulting in the highest throughput at 48044 tokens/s, a 12% improvement over the best 1D configuration.
+- In 2D setting, FSDP2+CP shows higher throughput (48044 tokens/s) than pure FSDP2 (42951 tokens/s), despite the median step duration being longer for FSDP2+CP (0.671 s vs 0.644 s). This discrepancy is due to occasional NCCL kernel stalls in the FSDP2 configuration that are not captured by the median but inflate the overall training time.
 
 | Métrique/STEP              | Sous-Métrique/STEP        | 4 fsdp Pytorch  | 4 fsdp          | 4 tp            | 4 cp            | 2 fsdp 2 tp     | 2 fsdp 2 cp     | 2 tp 2 cp       |
 |----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
@@ -134,9 +134,12 @@
 |                            | Comm-Compute Elapsed Time |                 | 124.6 ms        | 0.0 ms          | 102.7 ms        | 260.1 ms        | 169.8 ms        | 99.0 ms         |
 |                            | Comm only Elapsed Time    |                 | 14.2 ms         | 111.8 ms        | 41.0 ms         | 249.4 ms        | 15.7 ms         | 148.7 ms        |
 |                            | Overlap Efficiency        |                 | 89.8%           | 0.0%            | 71.5%           | 51.1%           | 91.5%           | 40.0%           |
-| Effective NVLink Bandwidth |                           |                 | **233 GB/s**    | **309 GB/s**    | **225 GB/s**    | **68 GB/s**     | **174 GB/s**    | **94 GB/s**     |
+| Effective NVLink Bandwidth |                           |                 | **233 GB/s**    | **309 GB/s**    | **225 GB/s**    | **63.2 GB/s**   | **174 GB/s**    | **88.0 GB/s**   |
 | Sum of NCCL Kernels (Seq)  |                           |                 | **108.0 ms**    | **109.4 ms**    | **109.4 ms**    | **359.3 ms**    | **110.1 ms**    | **234.7 ms**    |
 |                            | Gain From Seq to Ovl      |                 | **61.1 ms**     | **X**           | **42.4 ms**     | **57.2 ms**     | **57.2 ms**     | **82.1 ms**     |
+| Est. FLOPs                 |                           |                 | **321 TFLOPs**  | **642 TFLOPs**  | **174 TFLOPs**  | **OOM**         | **348 TFLOPs**  | **348 TFLOPs**  |
+| Sum of Compute Kernels     |                           |                 | **577.3 ms**    | **320.7 ms**    | **318.6 ms**    | **570.6 ms**    | **595.4 ms**    | **322.8 ms**    |
+| Est. FLOP/s                |                           | -               | **556 TFLOP/s** | **2002 TFLOP/s**| **546 TFLOP/s** | -               | **584 TFLOP/s** | **1078 TFLOP/S**|
 
 - `Median Duration` is given by looking at the pytorch profiler, unlike `Median Est. Step Duration` which is estimated with `torch.cuda.Event`.
 - `Est. Communication Volume` is estimated by parsing NCCL log.
@@ -147,6 +150,11 @@
 - `Comm-Compute Elapsed Time + Comm only Elapsed Time` represents the total wall-clock time where at least one NCCL kernel is running. This differs from `Sum of NCCL Kernels` which counts overlapping NCCL kernels multiple times.
 - `Sum of NCCL Kernels (Seq)` is given by looking at the total duration of all NCCL kernels when compute overlapping is disable.
 - `Gain From Seq to Ovl` is the gain from using a fully sequential cuda execution to a parallel compute-comm cuda execution.
+- `Est. FLOPs` uses [`FlopCounterMode`](https://github.com/pytorch/pytorch/blob/main/torch/utils/flop_counter.py) in PyTorch.
+  - **Limitations** (see [pytorch/pytorch#123800](https://github.com/pytorch/pytorch/issues/123800)):
+    - Only counts matmul, conv, and attention ops; elementwise ops are not counted.
+    - Intended usage with `torch.compile` is to run it on an **uncompiled** model first.
+    - Incurs significant memory overhead, which can cause CUDA OOM when GPU memory is tight.
 - `4 tp` shows 0.0 ms for `Comm-Compute Elapsed Time`, meaning TP has no compute-comm overlap (all NCCL happens during idle time). This explains why `Gain From Seq to Ovl = X` (no gain).
 
 ### 4) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-7B-Instruct)
@@ -162,6 +170,9 @@
 - Conflict with gradient clipping and Tensor parallelism inside NeMo due to some layers not being in the same device mesh as the Multi-Head Attention layers.
 - Conflict with the dataset and Context parallelism inside NeMo due to missing `loss_mask` in dataset.
 - Very long first forward at the beginning of each epoch inside NeMo due to torch.compile tracing that biases the time measurements.
+- PyTorch profiler does not distinguish whether NCCL kernels use intra-node (NVLink) or inter-node (InfiniBand) communication.
+- Some NCCL kernels use both intra-node (NVLink) and inter-node (InfiniBand) communication simultaneously, making it difficult to estimate per-step bandwidth for each fabric separately (https://github.com/NVIDIA/nccl-tests/pull/239).
+- FLOPs estimation is computed analytically and excludes some operations (https://github.com/pytorch/pytorch/issues/123800).
 
 ## Sources
 

@@ -3,8 +3,10 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from argparse import ArgumentParser, Namespace, BooleanOptionalAction
+from contextlib import nullcontext
 from math import ceil
 from pathlib import Path
+import numpy as np
 import random
 import socket
 
@@ -17,6 +19,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import SequentialLR, CosineAnnealingLR, LinearLR
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.flop_counter import FlopCounterMode
 from torchmetrics.aggregation import RunningMean
 from torchmetrics.text import Perplexity
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -34,6 +37,12 @@ from utils import (
     TrainingChronometer,
 )
 
+
+def _print_percentile_summary(data: list, name: str) -> None:
+    """Display distribution statistics for a list of FLOPs measurements.
+    """
+    p50 = np.median(data)
+    print(f">>> {name}: median {p50/1e12:.1f} TFLOPs")
 
 def cleanup():
     """Clean up distributed training"""
@@ -114,6 +123,7 @@ def parse_args() -> Namespace:
     parser.add_argument('--test', action=BooleanOptionalAction, default=False, help='Run in test mode for a limited number of steps.')
     parser.add_argument('--test-nsteps', type=int, default=100, help='Number of steps to run in test mode.')
     parser.add_argument('--display-optimizer-dtype', action=BooleanOptionalAction, default=False, help='Print precision of optimizer state tensors.')
+    parser.add_argument('--enable-flop-counter', action=BooleanOptionalAction, default=False, help='Compute FLOPs per step.')
 
     # DataLoader related arguments
     parser.add_argument('--dataset-path', type=Path, help='HuggingFaceHub dataset path.')
@@ -200,7 +210,8 @@ def main():
     if is_main_process():
         print(f"Model: {model}")
         print(f"Number of parameters: {sum(param.numel() for param in model.parameters())}")
-        print(f'Pre-loop GPU memory usage: {torch.cuda.max_memory_allocated()/1e9:.2f} GB')
+        print(f'Pre-loop GPU memory usage (allocated): {torch.cuda.max_memory_allocated()/1e9} GB')
+        print(f'Pre-loop GPU memory usage (reserved):  {torch.cuda.max_memory_reserved()/1e9} GB')
 
 
     # 4. Data processing
@@ -291,6 +302,7 @@ def main():
     dist.barrier()  # Wait for all CPUs and GPUs to be synchronized before continuing
     tagger = NCCLTagger()  # to add user-defined tag in NCCL log
     global_batch_idx = 0
+    flops_list = []  # to count FLOPs during training steps
     tagger.tag(global_batch_idx, "TRAINING START")
     if is_main_process(): chrono.track_cpu_training_time(start=True)
 
@@ -300,60 +312,67 @@ def main():
         sampler.set_epoch(epoch)  # set epoch for a sampler
 
         for i, (input_ids, labels, attention_mask) in enumerate(dataloader, start=1):
-            if args.test and i > args.test_nsteps * args.grad_acc: break
+            ctx = FlopCounterMode(display=False) if args.enable_flop_counter else nullcontext()
+            with ctx as flop_counter:
+                if args.test and i > args.test_nsteps * args.grad_acc: break
 
-            global_batch_idx += 1
-            if is_main_process(): chrono.track_gpu_HtoD_step_time(start=True)
+                global_batch_idx += 1
+                if is_main_process(): chrono.track_gpu_HtoD_step_time(start=True)
 
-            # Data Transfer
-            with nvtx.range("HtoD"):
-                input_ids = input_ids.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
-                attention_mask = attention_mask.to(device, non_blocking=True)
+                # Data Transfer
+                with nvtx.range("HtoD"):
+                    input_ids = input_ids.to(device, non_blocking=True)
+                    labels = labels.to(device, non_blocking=True)
+                    attention_mask = attention_mask.to(device, non_blocking=True)
 
-            if is_main_process():  # work only if it is on the same stream as data transfer
-                chrono.track_gpu_HtoD_step_time(start=False)
-                chrono.track_gpu_fwd_step_time(start=True)
+                if is_main_process():  # work only if it is on the same stream as data transfer
+                    chrono.track_gpu_HtoD_step_time(start=False)
+                    chrono.track_gpu_fwd_step_time(start=True)
 
-            # Forward
-            tagger.tag(global_batch_idx, "Forward")  # NCCL can be called during Forward
-            with nvtx.range("Forward"):
-                local_logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
-                bs, seq_len, vocab_size = local_logits.shape
-                local_loss: torch.Tensor = criterion(local_logits.view(bs * seq_len, vocab_size), labels.view(bs * seq_len))
+                # Forward
+                tagger.tag(global_batch_idx, "Forward")  # NCCL can be called during Forward
+                with nvtx.range("Forward"):
+                    local_logits: torch.Tensor = model(input_ids, attention_mask=attention_mask).logits
+                    bs, seq_len, vocab_size = local_logits.shape
+                    local_loss: torch.Tensor = criterion(local_logits.view(bs * seq_len, vocab_size), labels.view(bs * seq_len))
 
-            # Global metrics
-            avg_loss.update(local_loss.detach())
-            perplexity.update(local_logits.detach(), labels)
+                # Global metrics
+                avg_loss.update(local_loss.detach())
+                perplexity.update(local_logits.detach(), labels)
 
-            if is_main_process():
-                chrono.track_gpu_fwd_step_time(start=False)
-                chrono.track_gpu_bwd_step_time(start=True)
-
-            tagger.tag(global_batch_idx, "Backward")  # NCCL can be called during Backward
-            with nvtx.range("Backward"):
-                local_loss /= args.grad_acc  # take into account gradient accumulation impact
-                local_loss.backward()  # gradients are automatically divided by world_size: https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/_runtime_utils.py#L831
-
-            tagger.tag(global_batch_idx, "Optimizer")  # NCCL can be called for gradient clipping
-            with nvtx.range("Optimizer"):
-                if i % args.grad_acc == 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad()
-
-            if is_main_process():
-                chrono.track_gpu_bwd_step_time(start=False)
-
-            # Log training info
-            step = ( (i-1) // args.grad_acc) + 1
-            if step % 10 == 0 and i % args.grad_acc == 0:  # at the end of every 10 steps
-                L = avg_loss.compute()
-                perp = perplexity.compute()
-                last_lr = lr_scheduler.get_last_lr()[0]
                 if is_main_process():
-                    print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else ceil(len(dataloader)/ args.grad_acc)} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
+                    chrono.track_gpu_fwd_step_time(start=False)
+                    chrono.track_gpu_bwd_step_time(start=True)
+
+                tagger.tag(global_batch_idx, "Backward")  # NCCL can be called during Backward
+                with nvtx.range("Backward"):
+                    local_loss /= args.grad_acc  # take into account gradient accumulation impact
+                    local_loss.backward()  # gradients are automatically divided by world_size: https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/_runtime_utils.py#L831
+
+                tagger.tag(global_batch_idx, "Optimizer")  # NCCL can be called for gradient clipping
+                with nvtx.range("Optimizer"):
+                    if i % args.grad_acc == 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        optimizer.step()
+                        lr_scheduler.step()
+                        optimizer.zero_grad()
+
+                if is_main_process():
+                    chrono.track_gpu_bwd_step_time(start=False)
+
+                # Log training info
+                step = ( (i-1) // args.grad_acc) + 1
+                if step % 10 == 0 and i % args.grad_acc == 0:  # at the end of every 10 steps
+                    L = avg_loss.compute()
+                    perp = perplexity.compute()
+                    last_lr = lr_scheduler.get_last_lr()[0]
+                    if is_main_process():
+                        print(f"Rank {get_rank()}: Step {step} / {args.test_nsteps if args.test else ceil(len(dataloader)/ args.grad_acc)} | Local loss on 10 steps: {L.item():.3f} | Perplexity from start: {perp.item():.3f} | Last LR: {last_lr:0.3e}")
+
+            # Get total FLOPs programmatically
+            if args.enable_flop_counter:
+                flops_list.append(flop_counter.get_total_flops())
+                torch.cuda.empty_cache()  # free unused vRAM to reduce risks of CUDA OOM
 
         # Checkpointing by rank 0
         if not args.test:
@@ -386,10 +405,13 @@ def main():
             print(f'Throughput token/s: {args.test_nsteps*global_batch_size*args.seq_length/training_duration}')
         else:
             print(f'Throughput token/s: {total_steps*global_batch_size*args.seq_length/training_duration}')
+        if args.enable_flop_counter:
+            _print_percentile_summary(flops_list, name='FLOPs per training step')
 
         ## Memory Usage
         memory_usage()
-        print(f'Post-loop GPU memory usage: {torch.cuda.max_memory_allocated()/1e9:.2f} GB')
+        print(f'Post-loop GPU memory usage (allocated): {torch.cuda.max_memory_allocated()/1e9} GB')
+        print(f'Post-loop GPU memory usage (reserved):  {torch.cuda.max_memory_reserved()/1e9} GB')
 
         ## Optimizer dtype
         if args.display_optimizer_dtype:
