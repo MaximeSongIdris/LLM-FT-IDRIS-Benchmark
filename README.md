@@ -45,7 +45,7 @@
 
 #### Max Throughput (number of input tokens/s) with fixed effective batch size = 64
 
-|                           | GPUs=1        | GPUs=4         | bs=8           | bs=16           | bs=32           | bs=64           |
+|                           | GPUs=1        | GPUs=4         | GPUs=8         | GPUs=16         | GPUs=32         | GPUs=64           |
 |---------------------------|---------------|----------------|----------------|-----------------|-----------------|-----------------|
 | Throughput                | 7113 tokens/s | 37470 tokens/s | 77815 tokens/s | 144622 tokens/s | 266123 tokens/s | 364308 tokens/s |
 | bs/GPU                    | 2             | 2              | 2              | 2               | 2               | 1               |
@@ -111,7 +111,7 @@
 
 #### Max Throughput (number of input tokens/s) with fixed effective batch size = 64 (GPUs=4)
 
-|                           | 4 fsdp Pytorch | 4 fsdp         | 4 tp           | 4 cp           | 2 fsdp 2 tp    | 2 fsdp 2 cp    | 2 tp 2 cp      |
+|                           | 4fsdp Pytorch  | 4fsdp          | 4tp            | 4cp            | 2fsdp 2tp      | 2fsdp 2cp      | 2tp 2cp        |
 |---------------------------|----------------|----------------|----------------|----------------|----------------|----------------|----------------|
 | Throughput                | 35021 tokens/s | 42951 tokens/s | 31168 tokens/s | 40275 tokens/s | 35139 tokens/s | 48044 tokens/s | 30587 tokens/s |
 | bs/GPU                    | 2              | 2              | 4              | 4              | 4              | 4              | 4              |
@@ -122,10 +122,9 @@
 - The best results are given by maximizing the bs/GPU without using AC.
 - In 1D setting, FSDP2 in NeMo is more efficient than the native PyTorch implementation because it performs the gradient ReduceScatter in half precision rather than full precision, halving the communication volume.
 - In 1D setting, FSDP2 is more efficient than TP or CP, however it is limited by bs/GPU=2.
-- CP uses as much communication volume as FSDP2, AllGather on model shards and ReduceScatter on gradients, yet we can't see the communication of K/V for the ring attention. `FSDP2Strategy` shards effectively the model along the dimension of DP and CP, which explains the AllGather on model shards and the ReduceScatter on gradients.
 - In 2D setting, FSDP2+CP shows higher throughput (48044 tokens/s) than pure FSDP2 (42951 tokens/s), despite the median step duration being longer for FSDP2+CP (0.671 s vs 0.644 s). This discrepancy is due to occasional NCCL kernel stalls in the FSDP2 configuration that are not captured by the median but inflate the overall training time.
 
-| Métrique/STEP              | Sous-Métrique/STEP        | 4 fsdp Pytorch  | 4 fsdp          | 4 tp            | 4 cp            | 2 fsdp 2 tp     | 2 fsdp 2 cp     | 2 tp 2 cp       |
+| Métrique/STEP              | Sous-Métrique/STEP        | 4fsdp Pytorch   | 4fsdp           | 4tp             | 4cp             | 2fsdp 2tp       | 2fsdp 2cp       | 2tp 2cp         |
 |----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
 | Median Duration            |                           |                 | **656.0 ms**    | **495.7 ms**    | **424.2 ms**    | **884.0 ms**    | **675.6 ms**    | **535.3 ms**    |
 | Est. Communication Volume  |                           | **44.1 GB/GPU** | **32.3 GB/GPU** | **34.5 GB/GPU** | **32.3 GB/GPU** | **34.9 GB/GPU** | **32.3 GB/GPU** | **23.4 GB/GPU** |
@@ -144,20 +143,94 @@
 - `Median Duration` is given by looking at the pytorch profiler, unlike `Median Est. Step Duration` which is estimated with `torch.cuda.Event`.
 - `Est. Communication Volume` is estimated by parsing NCCL log.
 - `Sum of NCCL Kernels (Ovl)` is given by looking at the total duration of all NCCL kernels when compute overlapping is enable.
-- `Sum of NCCL Kernels (Ovl) > Sum of NCCL Kernels (Seq)` because NCCL kernels run slower when competing with compute kernels for GPU resources (SM contention, memory bandwidth).
 - `Comm-Compute Elapsed Time` is the elapsed time during which a compute kernel and at least 1 nccl kernel exist.
 - `Comm only Elapsed Time` is the elapsed time during which at least 1 nccl kernel exists while no compute kernel is running.
 - `Comm-Compute Elapsed Time + Comm only Elapsed Time` represents the total wall-clock time where at least one NCCL kernel is running. This differs from `Sum of NCCL Kernels` which counts overlapping NCCL kernels multiple times.
+- `Effective NVLink Bandwidth` = `Est. Communication Volume` / `Sum of NCCL Kernels (Ovl)`
 - `Sum of NCCL Kernels (Seq)` is given by looking at the total duration of all NCCL kernels when compute overlapping is disable.
+- `Sum of NCCL Kernels (Ovl) > Sum of NCCL Kernels (Seq)` because NCCL kernels run slower when competing with compute kernels for GPU resources (SM contention, memory bandwidth).
 - `Gain From Seq to Ovl` is the gain from using a fully sequential cuda execution to a parallel compute-comm cuda execution.
 - `Est. FLOPs` uses [`FlopCounterMode`](https://github.com/pytorch/pytorch/blob/main/torch/utils/flop_counter.py) in PyTorch.
   - **Limitations** (see [pytorch/pytorch#123800](https://github.com/pytorch/pytorch/issues/123800)):
     - Only counts matmul, conv, and attention ops; elementwise ops are not counted.
     - Intended usage with `torch.compile` is to run it on an **uncompiled** model first.
     - Incurs significant memory overhead, which can cause CUDA OOM when GPU memory is tight.
-- `4 tp` shows 0.0 ms for `Comm-Compute Elapsed Time`, meaning TP has no compute-comm overlap (all NCCL happens during idle time). This explains why `Gain From Seq to Ovl = X` (no gain).
+- `4tp` shows 0.0 ms for `Comm-Compute Elapsed Time`, meaning TP has no compute-comm overlap (all NCCL happens during idle time). This explains why `Gain From Seq to Ovl = X` (no gain).
+- `4tp` maximizes the Tensor Core utilization during compute kernel by using the biggest bs/GPU available, but lost a lot of time in comm. since it is unable to overlap compute and communication.
+- Ranking strategies by overlap efficiency tracks the throughput ranking almost perfectly, confirming that on intra-node with only NVLink as fabric, the ability to hide communication behind compute is the dominant factor determining training speed.
+- CP uses as much communication volume as FSDP2, AllGather on model shards and ReduceScatter on gradients, yet we can't see the communication of K/V for the ring attention, since it is [hidden inside the self-attention kernel](https://docs.nvidia.com/nemo-framework/user-guide/26.02/nemotoolkit/features/optimizations/communication_overlap.html#context-parallel-communication-overlap). `FSDP2Strategy` shards effectively the model along the dimension of DP and CP, which explains the AllGather on model shards and the ReduceScatter on gradients.
 
-### 4) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-7B-Instruct)
+### 4) Inter-Node Parallelism comparison (NeMo) on H100 80 Go (Qwen2.5-7B-Instruct)
+
+#### 4 nodes baseline
+
+|                           | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
+|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
+| Throughput                | 111370 tokens/s | 163524 tokens/s | 166635 tokens/s | 103442 tokens/s | 63909 tokens/s  | 103714 tokens/s | 64908 tokens/s  | 102650 tokens/s |
+| bs/GPU                    | 2               | 32              | 8               | 8               | 8               | 4               | 4               | 8               |
+| GA                        | 2               | 2               | 2               | 2               | 8               | 4               | 8               | 4               |
+| Median Est. Step Duration | 0.786 s         | 0.809 s         | 0.786 s         | 1.143 s         | 0.471 s         | 0.595 s         | 0.468 s         | 0.599 s         |
+
+- Due to occasional NCCL kernel stalls in the FSDP2 configuration, some steps can be up to 3× longer than the median step duration.
+
+| Métrique/STEP              | Sous-Métrique/STEP        | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
+|----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
+| Median Duration            |                           | **2436 ms**     | **837.6 ms**    | **817.2 ms**    | **1152 ms**     | **476.1 ms**    | **589.4 ms**    | **474.9 ms**    | **592.9 ms**    |
+| Est. Communication Volume  |                           | **40.4 GB/GPU** | **40.4 GB/GPU** | **40.4 GB/GPU** | **79.6 GB/GPU** | **27.8 GB/GPU** | **32.3 GB/GPU** | **27.8 GB/GPU** | **32.3 GB/GPU** |
+|                            | NVLink                    |                 |                 |                 | 69.1 GB/GPU     | 17.3 GB/GPU     | 11.5 GB/GPU     | 17.3 GB/GPU     | 11.5 GB/GPU     |
+|                            | Network                   |                 |                 |                 | 10.5 GB/GPU     | 10.5 GB/GPU     |                 | 10.5 GB/GPU     |                 |
+|                            | NVLink + Network          | 40.4 GB/GPU     | 40.4 GB/GPU     | 40.4 GB/GPU     |                 |                 | 20.7 GB/GPU     |                 | 20.7 GB/GPU     |
+| Sum of NCCL Kernels (Ovl)  |                           | **2189 ms**     | **234.0 ms**    | **355.7 ms**    | **736.1 ms**    | **306.5 ms**    | **409.9 ms**    | **374.8 ms**    | **346.3 ms**    |
+| Comm Elapsed Time          |                           | **2189 ms**     | **234.0 ms**    | **355.6 ms**    | **674,2 ms**    | **280.7 ms**    | **362.5 ms**    | **330.8 ms**    | **314.7 ms**    |
+|                            | Comm-Compute Elapsed Time | 373.9 ms        | 207.3 ms        | 323.8 ms        | 363.0 ms        | 100.7 ms        | 179.6 ms        | 142.2 ms        | 140.5 ms        |
+|                            | Comm only Elapsed Time    | 1815 ms         | 26.7 ms         | 31.8 ms         | 311.2 ms        | 180.0 ms        | 182.9 ms        | 188.6 ms        | 174.2 ms        |
+|                            | Overlap Efficiency        | 17.1%           | 88.8%           | 91.1%           | 53.8%           | 35.9%           | 49.5%           | 43.0%           | 44.6%           |
+| Effective Comm Bandwidth   |                           |                 |                 |                 |                 |                 |                 |                 |                 |
+|                            | NVLink                    |                 |                 |                 | 319.7 GB/s      | 282.3 GB/s      | 96.3 GB/s       | 195.1 GB/s      | 99.0 GB/s       |
+|                            | Network                   |                 |                 |                 | 20.2 GB/s       | 42.9 GB/s       |                 | 36.8 GB/s       |                 |
+|                            | NVLink + Network          | 18.4 GB/s       | 172.5 GB/s      | 113.5 GB/s      |                 |                 | 71.4  GB/s      |                 | 90.2 GB/s       |
+| Sum of NCCL Kernels (Seq)  |                           | **2033 ms**     | **209.8 ms**    | **214.4 ms**    | **520.4 ms**    | **292.6 ms**    | **355.7 ms**    | **335.5 ms**    | **345.2 ms**    |
+|                            | Gain From Seq to Ovl      | **162 ms**      | **149 ms**      | **134 ms**      | **161 ms**      | **94.8 ms**     | **143.1 ms**    | **123.7 ms**    | **133.7 ms**    |
+| Est. FLOPs                 |                           | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    |
+| Sum of Compute Kernels     |                           | **555.6 ms**    | **643.3 ms**    | **611.1 ms**    | **681.5 ms**    | **234.5 ms**    | **343.3 ms**    | **230.6 ms**    | **359.2 ms**    |
+| Est. FLOP/s                |                           | **X TFLOP/s**   | **X TFLOP/s**   | **X TFLOP/s**   | **X TFLOPs**    | **X TFLOP/s**   | **X TFLOP/S**   | **X TFLOPs**    | **X TFLOPs**    |
+
+- Compared to `4cp`, `16cp` has a significant increase in `Sum of Compute Kernels`, mainly due to communication over the network inside of compute kernels.
+
+#### 4 nodes baseline A100
+
+|                           | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
+|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
+| Throughput                | 16461 tokens/s  | 17045 tokens/s  | 16669 tokens/s  | 42370 tokens/s  | 13466 tokens/s  | 15088 tokens/s  | 13603 tokens/s  | 13921 tokens/s  |
+| bs/GPU                    | 2               | 32              | 8               | 8               | 8               | 4               | 4               | 8               |
+| GA                        | 2               | 2               | 2               | 2               | 8               | 4               | 8               | 4               |
+| Median Est. Step Duration | 7.559 s         | 7.662 s         | 7.828 s         | 2.969 s         | 2.396 s         | 4.279 s         | 2.360 s         | 4.659 s         |
+
+
+| Métrique/STEP              | Sous-Métrique/STEP        | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
+|----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
+| Median Duration            |                           | **9339 ms**     | **7791 ms**     | **7945 ms**     | **3007 ms**     | **2395 ms**     | **4270 ms**     | **2356 ms**     | **4629 ms**     |
+| Est. Communication Volume  |                           | **40.4 GB/GPU** | **40.4 GB/GPU** | **40.4 GB/GPU** | **79.6 GB/GPU** | **27.8 GB/GPU** | **32.3 GB/GPU** | **27.8 GB/GPU** | **32.3 GB/GPU** |
+|                            | NVLink                    |                 |                 |                 | 69.1 GB/GPU     | 17.3 GB/GPU     | 11.5 GB/GPU     | 17.3 GB/GPU     | 11.5 GB/GPU     |
+|                            | Network                   |                 |                 |                 |                 |                 |                 |                 |                 |
+|                            | NVLink + Network          | 40.4 GB/GPU     | 40.4 GB/GPU     | 40.4 GB/GPU     | 10.5 GB/GPU     | 10.5 GB/GPU     | 20.7 GB/GPU     | 10.5 GB/GPU     | 20.7 GB/GPU     |
+| Sum of NCCL Kernels (Ovl)  |                           | **9175 ms**     | **7329 ms**     | **7494 ms**     | **2629 ms**     | **2273 ms**     | **4084 ms**     | **2212 ms**     | **4539 ms**     |
+| Comm Elapsed Time          |                           | **9175 ms**     | **7329 ms**     | **7494 ms**     | **2403 ms**     | **2168 ms**     | **4023 ms**     | **2126 ms**     | **4396 ms**     |
+|                            | Comm-Compute Elapsed Time | 1308 ms         | 1365 ms         | 1398 ms         | 1298 ms         | 395.8 ms        | 697.5 ms        | 391.8 ms        | 698.3 ms        |
+|                            | Comm only Elapsed Time    | 7867 ms         | 5964 ms         | 6096 ms         | 1105 ms         | 1772 ms         | 3326 ms         | 1734 ms         | 3698 ms         |
+|                            | Overlap Efficiency        | 14.3%           | 18.6%           | 18.7%           | 54.0%           | 18.3%           | 17.3%           | 18.4%           | 15.9%           |
+| Effective Comm Bandwidth   |                           |                 |                 |                 |                 |                 |                 |                 |                 |
+|                            | NVLink                    |                 |                 |                 | 188.9 GB/s      | 137.3 GB/s      | 156.3 GB/s      | 161.6 GB/s      | 72.9 GB/s       |
+|                            | Network                   |                 |                 |                 |                 |                 |                 |                 |                 |
+|                            | NVLink + Network          | 4.40 GB/s       | 5.51 GB/s       | 5.39 GB/s       | 4.65 GB/s       | 4.90 GB/s       | 5.17  GB/s      | 5.00 GB/s       | 4.74 GB/s       |
+| Est. FLOPs                 |                           | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    | **X TFLOPs**    |
+| Sum of Compute Kernels     |                           | **1378 ms**     | **1536 ms**     | **1535 ms**     | **1615 ms**     | **559.0 ms**    | **870.1 ms**    | **558.5 ms**    | **863.0 ms**    |
+| Est. FLOP/s                |                           | **X TFLOP/s**   | **X TFLOP/s**   | **X TFLOP/s**   | **X TFLOPs**    | **X TFLOP/s**   | **X TFLOP/S**   | **X TFLOPs**    | **X TFLOPs**    |
+
+- Ranking inversion: `4fsdp 4tp` goes from mid-tier on H100 (103442 tokens/s) to dominant on A100 (42370 tokens/s, ~2.5× ahead of everyone else), because this is the only config routing most traffic over fast intra-node NVLink.
+- FSDP/CP configs collapse equally (`16fsdp`, `16cp`, `4fsdp 4cp`) due to huge communication over the network that make `Comm Elapsed Time` completely exceed `Sum of Compute Kernels`, and thus explain the collapse in `Overlap Efficiency`.
+
+<img src="asset/inter_node_parallelism_comparison.png" width="1000">
 
 #### Max Throughput (number of input tokens/s) with fixed effective batch size = 64 (GPUs=64)
 
@@ -173,6 +246,8 @@
 - PyTorch profiler does not distinguish whether NCCL kernels use intra-node (NVLink) or inter-node (InfiniBand) communication.
 - Some NCCL kernels use both intra-node (NVLink) and inter-node (InfiniBand) communication simultaneously, making it difficult to estimate per-step bandwidth for each fabric separately (https://github.com/NVIDIA/nccl-tests/pull/239).
 - FLOPs estimation is computed analytically and excludes some operations (https://github.com/pytorch/pytorch/issues/123800).
+- CP hides communication inside of compute kernels, which inflates `Est. FLOP/s` and `Effective Comm Bandwidth` values.
+- `PCIe` traffic could potentially helps us estimate `Effective Network Bandwidth`, but it also hosts simple CPU-GPU traffic, so the estimation would also be noisy.
 
 ## Sources
 
