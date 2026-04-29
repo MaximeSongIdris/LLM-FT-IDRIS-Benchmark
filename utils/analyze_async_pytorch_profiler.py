@@ -255,7 +255,10 @@ def analyze_overlap_step_breakdown(gpu_step_annotations: dict,
         "other": [],
     }
     for event in default_stream_event_per_step[train_step]:
-        events_by_category[categorize_cuda_event(event)].append(event)
+        try:
+            events_by_category[categorize_cuda_event(event)].append(event)
+        except:
+            print(f'This event type was in default stream: {categorize_cuda_event(event)}')
 
     print(f"{gpu_step_annotations[train_step]['name']}:")
     print(f"  CPU-bound:                              {idle_classification['cpu_bound']:8.1f} ms")

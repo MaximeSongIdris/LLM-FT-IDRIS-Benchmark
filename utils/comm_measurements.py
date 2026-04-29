@@ -103,12 +103,12 @@ def parse_nccl_fabric(log_file: str) -> dict:
                 continue
 
             # Detect NVLink in topology (+ NVL[bw] - GPU/...)
-            if re.search(r"\+ NVL\[[\d.]+\] - GPU/", line):
+            if re.search(r"\+ NVL\[[\d.]+\] -", line):
                 comms[current_comm]["fab"].add("NVLink")
                 continue
 
             # Detect Network in topology (+ NET[bw] - NET/...)
-            if re.search(r"\+ NET\[[\d.]+\] - NET/", line):
+            if re.search(r"\+ NET\[[\d.]+\] -", line):
                 comms[current_comm]["fab"].add("Network")
                 continue
 
