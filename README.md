@@ -160,9 +160,9 @@
 - Ranking strategies by overlap efficiency tracks the throughput ranking almost perfectly, confirming that on intra-node with only NVLink as fabric, the ability to hide communication behind compute is the dominant factor determining training speed.
 - CP uses as much communication volume as FSDP2, AllGather on model shards and ReduceScatter on gradients, yet we can't see the communication of K/V for the ring attention, since it is [hidden inside the self-attention kernel](https://docs.nvidia.com/nemo-framework/user-guide/26.02/nemotoolkit/features/optimizations/communication_overlap.html#context-parallel-communication-overlap). `FSDP2Strategy` shards effectively the model along the dimension of DP and CP, which explains the AllGather on model shards and the ReduceScatter on gradients.
 
-### 4) Inter-Node Parallelism comparison (NeMo) on H100 80 Go (Qwen2.5-7B-Instruct)
+### 4) Inter-Node Parallelism comparison (NeMo) on A100 / H100 80 Go (Qwen2.5-7B-Instruct)
 
-#### 4 nodes baseline
+#### 4 nodes baseline H100
 
 |                           | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
 |---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
@@ -172,6 +172,7 @@
 | Median Est. Step Duration | 0.786 s         | 0.809 s         | 0.786 s         | 1.143 s         | 0.471 s         | 0.595 s         | 0.468 s         | 0.599 s         |
 
 - Due to occasional NCCL kernel stalls in the FSDP2 configuration, some steps can be up to 3× longer than the median step duration.
+- `16fsdp` (NeMo) is slower than `16fsdp PyTorch` (c.f. above), even though theoretically it should be quicker due to the decrease in comm. traffic).
 
 | Métrique/STEP              | Sous-Métrique/STEP        | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
 |----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
@@ -228,13 +229,26 @@
 | Est. FLOP/s                |                           | **X TFLOP/s**   | **X TFLOP/s**   | **X TFLOP/s**   | **X TFLOPs**    | **X TFLOP/s**   | **X TFLOP/S**   | **X TFLOPs**    | **X TFLOPs**    |
 
 - Ranking inversion: `4fsdp 4tp` goes from mid-tier on H100 (103442 tokens/s) to dominant on A100 (42370 tokens/s, ~2.5× ahead of everyone else), because this is the only config routing most traffic over fast intra-node NVLink.
+- Maximizing TP dimension reduces the comm. volume over the network fabric.
 - FSDP/CP configs collapse equally (`16fsdp`, `16cp`, `4fsdp 4cp`) due to huge communication over the network that make `Comm Elapsed Time` completely exceed `Sum of Compute Kernels`, and thus explain the collapse in `Overlap Efficiency`.
 
 <img src="asset/inter_node_parallelism_comparison.png" width="1000">
 
-#### Max Throughput (number of input tokens/s) with fixed effective batch size = 64 (GPUs=64)
+#### 4 nodes optimized for A100
+
+|                           | 4fsdp 4tp          | 2fsdp 8cp       | 8fsdp 2cp       | 8fsdp 2tp       | 2tp 8cp         |
+|---------------------------|--------------------|-----------------|-----------------|-----------------|-----------------|
+| Throughput                | **42370 tokens/s** | 17262 tokens/s  | 17640 tokens/s  | 23794 tokens/s  | 14064 tokens/s  |
+| bs/GPU                    | 8                  | 16              | 4               | 4               | 16              |
+| GA                        | 2                  | 2               | 2               | 2               | 4               |
+| Median Est. Step Duration | 2.969 s            | 7.582 s         | 7.426 s         | 5.270 s         | 4.609 s         |
+
+- Additional configurations better suited to 8-GPU-per-node topologies were evaluated. `4fsdp 4tp` remains dominant, confirming that maximizing intra-node TP is the right strategy on A100. 8fsdp 2tp is the only other configuration worth noting, reaching 23794 tokens/s by partially reducing inter-node traffic compared to pure FSDP/CP configs.
+- TP could not be pushed to 8 for Qwen2.5-7B-Instruct, as its 28 Q heads per layer are not divisible by 8. The maximum achievable intra-node TP therefore remains 4, leaving the residual parallelism to cross node boundaries over the slower network fabric.
 
 ### 5) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
+
+
 
 ### Issues
 
