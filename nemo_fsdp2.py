@@ -6,12 +6,17 @@ For Megatron-native training (DDP+TP+CP), see nemo_megatron.py.
 
 Source: https://docs.nvidia.com/nemo-framework/user-guide/25.04/automodel/sft.html
 """
+import os
+
+# Filter NCCL debug output to rank 0 only — we are using torchrun to launch distributed training
+if int(os.environ.get("RANK", 0)) != 0:
+    os.environ["NCCL_DEBUG"] = "WARN"
+    os.environ.pop("NCCL_DEBUG_FILE", None)
 
 from argparse import ArgumentParser, BooleanOptionalAction, Namespace
 from math import ceil
 from pathlib import Path
 from typing import Any
-import os
 
 from datasets import DatasetDict, load_dataset
 from lightning.pytorch.utilities.types import STEP_OUTPUT

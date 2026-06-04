@@ -1,6 +1,10 @@
 import os
 # https://stackoverflow.com/questions/62691279/how-to-disable-tokenizers-parallelism-true-false-warning/72926996#72926996: Rust multi-threading conflicts when Dataloader forks its workers.
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Filter NCCL debug output to rank 0 only — we are using srun to launch distributed training
+if int(os.environ.get("SLURM_PROCID", 0)) != 0:
+    os.environ["NCCL_DEBUG"] = "WARN"
+    os.environ.pop("NCCL_DEBUG_FILE", None)
 
 from argparse import ArgumentParser, Namespace, BooleanOptionalAction
 from contextlib import nullcontext

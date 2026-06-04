@@ -34,6 +34,7 @@ export NCCL_DEBUG_FILE=slurm_logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}_%p.nccl
 ulimit -s 8192  # issue with thread stack when using a lot of GPUs
 
 export HF_HOME=$WORK/LLM-FT-IDRIS-Benchmark/.cache
+export CUDA_LAUNCH_BLOCKING=0
 time srun singularity exec \
     --nv \
     --bind $WORK/LLM-FT-IDRIS-Benchmark,$DSDIR \
