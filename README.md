@@ -248,7 +248,24 @@
 
 ### 5) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
 
+#### Max Throughput (number of input tokens/s) with fixed effective batch size = 512 without AC
 
+|                           | 2fsdp 4tp 8cp   | 2fsdp 32cp      | 4fsdp 4tp 4cp   | 4fsdp 16cp      | 4tp 16cp        | 8fsdp 4tp 2cp   | 8fsdp 8cp       | 16fsdp 4cp      | 16fsdp 4tp      | 32fsdp 2cp      | 64cp            |      
+|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
+| Throughput                | 25075 tokens/s  | 36225 tokens/s  | 25369 tokens/s  | 35531 tokens/s  | 25713 tokens/s  | 26610 tokens/s  | 33158 tokens/s  | 11782 tokens/s  | 30866 tokens/s  | 35099 tokens/s  | 35467 tokens/s  |
+| bs/GPU                    | 32              | 16              | 16              | 8               | 64              | 8               | 4               | 2               | 8               | 1               | 32              |
+| GA                        | 8               | 16              | 8               | 16              | 8               | 8               | 16              | 16              | 4               | 16              | 16              |
+| AC                        | **Yes**         | No              | **Yes**         | No              | **Yes**         | **Yes**         | No              | No              | **Yes**         | No              | No              |
+| Median Est. Step Duration | 9.993 s         | 3.451 s         | 9.948 s         | 3.607 s         | 9.837 s         | 9.546 s         | 3.847 s         | 10.919 s        | 16.382 s        | 3.533 s         | 3.533 s         |
+
+- Parallelizing along the CP dimension is extremely efficient in compute.
+
+#### Comparison with and without AC (unlike sAC, we don't control how many activation layers are dropped)
+
+<img src="asset/speed-up_using_ac.png" width="800">
+
+- Configs with TP=1 can't double the bs due to OOM crashes.
+- Quadrupling the bs/GPU by using AC speeds up training by approximately 40-50%.
 
 ### Issues
 

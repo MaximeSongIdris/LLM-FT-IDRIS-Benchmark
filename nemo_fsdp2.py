@@ -130,8 +130,8 @@ def create_strategy(
         )
 
     raise ValueError(
-        f"Unknown strategy: {strategy_name}. "
-        f"This script supports 'SingleDevice' and 'FSDP2+TP+CP'. "
+        f"Unknown strategy: {strategy_name}."
+        f"This script supports 'SingleDevice' and 'FSDP2+TP+CP'."
         f"For MegatronStrategy (DDP+TP+CP), use nemo_megatron.py."
     )
 
@@ -392,10 +392,10 @@ def main() -> None:
             accumulate_grad_batches=grad_acc,
             gradient_clip_val=0.0,  # doesn't work with Tensor Parallel due to sharding of some layers (embedding layer, LayerNorm, etc.)
             use_distributed_sampler=True,  # needed to use PL DistributedSampler
-        ),
+        ),  # https://github.com/Lightning-AI/pytorch-lightning/blob/master/src/lightning/pytorch/trainer/trainer.py#L89
         optim=optimizer,
         peft=None,
-    )  # https://github.com/Lightning-AI/pytorch-lightning/blob/master/src/lightning/pytorch/trainer/trainer.py#L89
+    )
 
 
 if __name__ == '__main__':
