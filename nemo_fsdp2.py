@@ -189,7 +189,7 @@ def parse_args() -> Namespace:
 
 
 def main() -> None:
-    """Run SFT with HuggingFace model using FSDP2 strategies."""
+    """Run SFT with HuggingFace model using FSDP2 strategy."""
     # 1. Get command-line arguments
     args = parse_args()
 
@@ -289,12 +289,12 @@ def main() -> None:
                 input_ids = t[0]
                 labels = t[1]
                 attention_mask = t[2]
-                # loss_mask: compute loss where labels != -100 (Token ID used to pad labels
+                # loss_mask: compute loss where labels != -100 (Token ID used to pad labels)
                 loss_mask = (labels != -100).float()
                 return {
-                    "input_ids": input_ids,
-                    "labels": labels,
-                    "attention_mask": attention_mask,
+                    "input_ids": input_ids,  # tokens of the conversion between an user and an assistant
+                    "labels": labels,  # pad tokens and non-assistant tokens are ignored in loss computation
+                    "attention_mask": attention_mask,  # ignore the pad tokens from attention scores
                     "loss_mask": loss_mask,  # necessary for Context Parallelism
                 }
             raise TypeError(f"collate_fn returned {type(t)}, expected tuple of 3 elements")
