@@ -248,8 +248,12 @@ def main() -> None:
         model_config.recompute_granularity = "full"
         model_config.recompute_method = "uniform"
         model_config.recompute_num_layers = 1
+    # With CP>1 the sequence is split across ranks, so one rank's slice may contain
+    # zero answer tokens. The default loss averages per rank, which then divides by
+    # that local zero -> NaN. This flag instead sums the loss and divides by the total
+    # token count over the whole CP group, so no rank divides by its own zero.
+    model_config.calculate_per_token_loss = True
     model = model_cls(model_config, tokenizer=tokenizer)
-    model_config.calculate_per_token_loss = True  # requis dès que CP>1
 
     # Distributed training strategy
     strategy = nl.MegatronStrategy(
