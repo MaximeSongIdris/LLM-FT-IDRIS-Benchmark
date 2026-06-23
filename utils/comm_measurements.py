@@ -26,6 +26,8 @@ def wire_bytes_per_gpu(coll_op: str, nccl_count: int, datatype: int, nranks: int
         'ReduceScatter': N,
         'AllGather':     N,
         'AlltoAll':      N,
+        'Broadcast':     1,
+        'Reduce':        1,
         "Send":          1,
         "Recv":          1,
     }
@@ -48,6 +50,13 @@ def wire_bytes_per_gpu(coll_op: str, nccl_count: int, datatype: int, nranks: int
         'ReduceScatter': (N - 1) / N,
         'AllGather':     (N - 1) / N,
         'AlltoAll':      (N - 1) / N,
+        # nccl-tests reports busBw = baseBw (factor 1) for Broadcast/Reduce, so this
+        # returns S = count*typesize per GPU. NOTE: this is the bus-bandwidth metric,
+        # NOT the aggregate fabric traffic. Actual total wire volume is (N-1)*S for both.
+        # Traffic may also be distributed unevenly across GPUs/links depending on the
+        # algorithm NCCL picks, unlike the symmetric AllReduce/AllGather/ReduceScatter.
+        'Broadcast':     1,
+        'Reduce':        1,
         "Send":          1,
         "Recv":          1,
     }

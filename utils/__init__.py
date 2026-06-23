@@ -7,4 +7,5 @@ from .cpu_mem_usage import memory_usage
 from .dataset import sft_tulu_tokenize_and_truncate, make_sft_collate
 from .hostlist import expand_hostlist
 from .my_benchmark_callback import BenchmarkCallback
+from .my_megatron_benchmark_callback import MegatronBenchmarkCallback
 from .nccl_tagger import NCCLTagger

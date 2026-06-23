@@ -4,7 +4,7 @@
 Supports SingleDevice and FSDP2+TP+CP strategies for distributed training.
 For Megatron-native training (DDP+TP+CP), see nemo_megatron.py.
 
-Source: https://docs.nvidia.com/nemo-framework/user-guide/25.04/automodel/sft.html
+Source: https://docs.nvidia.com/nemo-framework/user-guide/25.07/automodel/sft.html
 """
 import os
 

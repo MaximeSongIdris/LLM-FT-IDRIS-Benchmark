@@ -27,6 +27,8 @@ class TrainingChronometer:
         self.end_training_time = None
 
         # GPU Timer
+        self.start_global = []
+        self.end_global = []
         self.start_HtoD = []
         self.end_HtoD = []
         self.start_fwd = []
@@ -58,6 +60,15 @@ class TrainingChronometer:
             self.start_training_time = time()
         else:
             self.end_training_time = time()
+
+    def track_gpu_step_time(self, start:bool=True) -> None:
+        """Record a CUDA Event marking the start or end of a global step."""
+        gpu_timer = torch.cuda.Event(enable_timing=True)
+        gpu_timer.record()
+        if start:
+            self.start_global.append(gpu_timer)
+        else:
+            self.end_global.append(gpu_timer)
 
     def track_gpu_HtoD_step_time(self, start: bool=True) -> None:
         """Record a CUDA Event marking the start or end of a Host-to-Device transfer."""
@@ -110,11 +121,13 @@ class TrainingChronometer:
         torch.cuda.synchronize()
 
         # Compute time performance in seconds
+        time_perf_global = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_global, self.end_global)]
         time_perf_HtoD = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_HtoD, self.end_HtoD)]
         time_perf_fwd = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_fwd, self.end_fwd)]
         time_perf_bwd = [gpu_start_timer.elapsed_time(gpu_end_timer) / 1000 for (gpu_start_timer, gpu_end_timer) in zip(self.start_bwd, self.end_bwd)]
 
         # Skip the first n steps to avoid outliers that may be due to warm-up
+        time_perf_global = time_perf_global[skip_steps:]
         time_perf_HtoD = time_perf_HtoD[skip_steps:]
         time_perf_fwd = time_perf_fwd[skip_steps:]
         time_perf_bwd = time_perf_bwd[skip_steps:]
@@ -127,7 +140,10 @@ class TrainingChronometer:
         self.print_percentile_summary(time_perf_bwd, "Backward pass performance time")
 
         # Total training time estimation
-        time_perf_step = [x + y + z for (x,y,z) in zip(time_perf_HtoD, time_perf_fwd, time_perf_bwd)]
+        if time_perf_global != []:
+            time_perf_step = time_perf_global
+        else:
+            time_perf_step = [x + y + z for (x,y,z) in zip(time_perf_HtoD, time_perf_fwd, time_perf_bwd)]
         self.print_percentile_summary(time_perf_step, "Step performance time")
         print(f'>>> Number of weight updates per epoch: {ceil(total_batches_per_epoch / grad_acc)}')
         print(f'>>> Estimated training time of 1 epoch: {np.median(time_perf_step) * total_batches_per_epoch / 3600} h')
