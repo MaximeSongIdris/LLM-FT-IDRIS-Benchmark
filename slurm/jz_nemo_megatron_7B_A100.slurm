@@ -1,21 +1,21 @@
 #!/bin/bash
 
 ## JOB INFO
-#SBATCH --job-name=nemo+megatron+7B+2dp+4tp+2bs+ovl
+#SBATCH --job-name=nemo+megatron+7B+4dp+4tp+2bs+ovl+a100
 #SBATCH --output=slurm_logs/%x_%j.out
 #SBATCH --error=slurm_logs/%x_%j.out
 
 ## NODE CONFIGURATION
-#SBATCH --constraint=h100
+#SBATCH --constraint=a100
 #SBATCH --nodes=2
-#SBATCH --gpus-per-node=4
+#SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=96
 #SBATCH --hint=nomultithread
 
 ## JOB ACCOUNTABILITY
-#SBATCH --account=sos@h100
-#SBATCH --qos=qos_gpu_h100-dev
+#SBATCH --account=sos@a100
+#SBATCH --qos=qos_gpu_a100-dev
 #SBATCH --time=01:00:00
 #SBATCH --array=0
 
@@ -65,7 +65,7 @@ time srun singularity exec \
             --seq-length 4096 \
             --epochs 1 \
             --test \
-            --test-nsteps 25 \
+            --test-nsteps 100 \
             --no-enable-flop-counter \
             --no-pytorch-profiler \
             --dataset-root ./sft_megatron_data \
@@ -75,9 +75,9 @@ time srun singularity exec \
             --no-fp8 \
             --devices-per-node $SLURM_GPUS_ON_NODE \
             --num-nodes $SLURM_NNODES \
-            --dp-size 2 \
-            --pp-size 1 \
-            --tp-size 4 \
+            --dp-size 1 \
+            --pp-size 2 \
+            --tp-size 8 \
             --cp-size 1
 
 date

@@ -281,6 +281,8 @@
 - `PCIe` traffic could potentially helps us estimate `Effective Network Bandwidth`, but it also hosts simple CPU-GPU traffic, so the estimation would also be noisy.
 - Under `nl.MegatronStrategy`, the entire forward-backward over all micro-batches plus the optimizer step runs inside a single `training_step`, so Lightning's per-batch hooks fire once per global step (not per micro-batch) and the fine-grained `on_before/after_backward` hooks never fire, which breaks any callback that assumes micro-batch granularity or separate forward/backward timings.
 - NeMo 2.0 (the monolithic `llm`/`nlp`/`vlm` collections used here) is officially deprecated as of the 25.11 release and is being split into focused standalone libraries: NeMo-RL (post-training/RL), NeMo Curator (data curation), NeMo AutoModel (Day-0 Hugging Face training), and Megatron-Bridge (a PyTorch-native Megatron-Core training loop). This project deliberately stayed on the older all-in-one NeMo 2.0 (yTorch Lightning), because at the time it had more mature documentation and the Lightning callback hooks gave enough control for the FLOP counter, profiler, and benchmark callbacks.
+- `calculate_per_token_loss=True` is required for CP because CP splits each sequence across ranks, so per-rank token counts are uneven and a rank can hold a fully-masked slice; the flag sums numerator and denominator across the CP group before dividing, instead of letting each rank divide by its own (possibly zero) local token count. It fixes CP-only but not CP+DP; root cause not confirmed (likely a loss-normalization ordering issue when DP is combined with CP).
+
 
 ## Sources
 

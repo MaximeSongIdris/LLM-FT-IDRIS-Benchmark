@@ -244,15 +244,15 @@ def main() -> None:
     tokenizer = AutoTokenizer(args.model_path)
     model_cls, config_cls = MODEL_ARCHS[args.model_path.name]
     model_config = config_cls(seq_length=args.seq_length)
-    if args.activation_checkpointing:
-        model_config.recompute_granularity = "full"
-        model_config.recompute_method = "uniform"
-        model_config.recompute_num_layers = 1
     # With CP>1 the sequence is split across ranks, so one rank's slice may contain
     # zero answer tokens. The default loss averages per rank, which then divides by
     # that local zero -> NaN. This flag instead sums the loss and divides by the total
     # token count over the whole CP group, so no rank divides by its own zero.
     model_config.calculate_per_token_loss = True
+    if args.activation_checkpointing:
+        model_config.recompute_granularity = "full"
+        model_config.recompute_method = "uniform"
+        model_config.recompute_num_layers = 1
     model = model_cls(model_config, tokenizer=tokenizer)
 
     # Distributed training strategy
@@ -271,7 +271,7 @@ def main() -> None:
         print(f"CP size                  : {args.cp_size}")
         print(f"Sequence parallel        : {args.sequence_parallel}")
 
-    # 4. Data processing (file-based SFT; emits Megatron batch format + answer-only loss mask).
+    # 4. Data processing (file-based SFT).
     data = llm.FineTuningDataModule(
         dataset_root=str(args.dataset_root),
         seq_length=args.seq_length,
