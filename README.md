@@ -45,7 +45,7 @@
 
 #### Max Throughput (number of input tokens/s) with fixed effective batch size = 64
 
-|                           | GPUs=1        | GPUs=4         | GPUs=8         | GPUs=16         | GPUs=32         | GPUs=64           |
+|                           | GPUs=1        | GPUs=4         | GPUs=8         | GPUs=16         | GPUs=32         | GPUs=64         |
 |---------------------------|---------------|----------------|----------------|-----------------|-----------------|-----------------|
 | Throughput                | 7113 tokens/s | 37470 tokens/s | 77815 tokens/s | 144622 tokens/s | 266123 tokens/s | 364308 tokens/s |
 | bs/GPU                    | 2             | 2              | 2              | 2               | 2               | 1               |
@@ -55,6 +55,7 @@
 - Median Est. Step Duration: The median of all the `Est. Step Duration`in a single run.
 - `Median Est. Step Duration` increases for `GPUs=1` because of the additional overhead from activation checkpointing.
 - `Median Est. Step Duration` decreases for `GPUs=64` due to `bs/GPU=1`.
+- Scaling GPU count at fixed effective batch size also reduces total communication volume per global step: GA drops sharply (GA=32 at GPUs=1, GA=2 at GPUs=16, GA=1 at GPUs=32) since more GPUs means more DP shards to spread the same batch across, while the per-microstep AllGather/ReduceScatter volume only grows slightly (the (N-1)/N sharding factor saturates toward 1). The drop in GA dominates. This is quantified with actual `Est. Communication Volume` numbers in the NeMo tables below in section 3 and 4: going from 4fsdp (GA=8) to 16fsdp (GA=2) at the same effective batch size cuts total communication volume per global step by ~3.2× despite 4× more GPUs.
 
 <img src="asset/gpu_scaling_7B.png" width="600">
 
@@ -111,7 +112,7 @@
 
 #### Max Throughput (number of input tokens/s) with fixed effective batch size = 64 (GPUs=4)
 
-|                           | 4fsdp Pytorch  | 4fsdp          | 4tp            | 4cp            | 2fsdp 2tp      | 2fsdp 2cp      | 2tp 2cp        |
+|                           | 4fsdp Pytorch  | 4fsdp          | 4tp            | 4fscp          | 2fsdp 2tp      | 2fsdp 2fscp    | 2tp 2fscp      |
 |---------------------------|----------------|----------------|----------------|----------------|----------------|----------------|----------------|
 | Throughput                | 35021 tokens/s | 42951 tokens/s | 31168 tokens/s | 40275 tokens/s | 35139 tokens/s | 48044 tokens/s | 30587 tokens/s |
 | bs/GPU                    | 2              | 2              | 4              | 4              | 4              | 4              | 4              |
@@ -121,12 +122,13 @@
 - We are using `FSDP2Strategy` which has options for Context Paralellism (CP) and Tensor Parallelism (TP).
 - The best results are given by maximizing the bs/GPU without using AC.
 - In 1D setting, FSDP2 in NeMo is more efficient than the native PyTorch implementation because it performs the gradient ReduceScatter in half precision rather than full precision, halving the communication volume.
-- In 1D setting, FSDP2 is more efficient than TP or CP, however it is limited by bs/GPU=2.
+- In 1D setting, FSDP2 is more efficient than TP or FSCP, however it is limited by bs/GPU=2.
 - In 2D setting, FSDP2+CP shows higher throughput (48044 tokens/s) than pure FSDP2 (42951 tokens/s), despite the median step duration being longer for FSDP2+CP (0.671 s vs 0.644 s). This discrepancy is due to occasional NCCL kernel stalls in the FSDP2 configuration that are not captured by the median but inflate the overall training time.
 
-| Métrique/STEP              | Sous-Métrique/STEP        | 4fsdp Pytorch   | 4fsdp           | 4tp             | 4cp             | 2fsdp 2tp       | 2fsdp 2cp       | 2tp 2cp         |
+| Métrique/STEP              | Sous-Métrique/STEP        | 4fsdp Pytorch   | 4fsdp           | 4tp             | 4fscp           | 2fsdp 2tp       | 2fsdp 2fscp     | 2tp 2fscp       |
 |----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
 | Median Duration            |                           |                 | **656.0 ms**    | **495.7 ms**    | **424.2 ms**    | **884.0 ms**    | **675.6 ms**    | **535.3 ms**    |
+| Est. Comm. Vol/Global Step |                		     | 352.8 GB/GPU	   | 258.4 GB/GPU	 | 552.0 GB/GPU	   | 516.8 GB/GPU	 | 279.2 GB/GPU	   | 258.4 GB/GPU	 | 374.4 GB/GPU    |
 | Est. Communication Volume  |                           | **44.1 GB/GPU** | **32.3 GB/GPU** | **34.5 GB/GPU** | **32.3 GB/GPU** | **34.9 GB/GPU** | **32.3 GB/GPU** | **23.4 GB/GPU** |
 | Sum of NCCL Kernels (Ovl)  |                           |                 | **138.8 ms**    | **111.8 ms**    | **143.7 ms**    | **551.4 ms**    | **185.5 ms**    | **265.5 ms**    |
 | Comm Elapsed Time          |                           |                 | **138.8 ms**    | **111.8 ms**    | **143.7 ms**    | **509.5 ms**    | **185.5 ms**    | **247.7 ms**    |
@@ -158,13 +160,13 @@
 - `4tp` shows 0.0 ms for `Comm-Compute Elapsed Time`, meaning TP has no compute-comm overlap (all NCCL happens during idle time). This explains why `Gain From Seq to Ovl = X` (no gain).
 - `4tp` maximizes the Tensor Core utilization during compute kernel by using the biggest bs/GPU available, but lost a lot of time in comm. since it is unable to overlap compute and communication.
 - Ranking strategies by overlap efficiency tracks the throughput ranking almost perfectly, confirming that on intra-node with only NVLink as fabric, the ability to hide communication behind compute is the dominant factor determining training speed.
-- CP uses as much communication volume as FSDP2, AllGather on model shards and ReduceScatter on gradients, yet we can't see the communication of K/V for the ring attention, since it is [hidden inside the self-attention kernel](https://docs.nvidia.com/nemo-framework/user-guide/26.02/nemotoolkit/features/optimizations/communication_overlap.html#context-parallel-communication-overlap). `FSDP2Strategy` shards effectively the model along the dimension of DP and CP, which explains the AllGather on model shards and the ReduceScatter on gradients.
+- FSCP uses as much communication volume as FSDP2, AllGather on model shards and ReduceScatter on gradients, yet we can't see the communication of K/V for the ring attention, since it is [hidden inside the self-attention kernel](https://docs.nvidia.com/nemo-framework/user-guide/26.02/nemotoolkit/features/optimizations/communication_overlap.html#context-parallel-communication-overlap). `FSDP2Strategy` shards effectively the model along the dimension of DP and CP, which explains the AllGather on model shards and the ReduceScatter on gradients.
 
 ### 4) Inter-Node Parallelism comparison (NeMo) on A100 / H100 80 Go (Qwen2.5-7B-Instruct)
 
 #### 4 nodes baseline H100
 
-|                           | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
+|                           | 16fsdp          | 16fscp          | 4fsdp 4fscp     | 4fsdp 4tp       | 4tp 4fscp       | 4fsdp 2tp 2fscp | 2fsdp 4tp 2fscp | 2fsdp 2tp 4cfsp |
 |---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
 | Throughput                | 111370 tokens/s | 163524 tokens/s | 166635 tokens/s | 103442 tokens/s | 63909 tokens/s  | 103714 tokens/s | 64908 tokens/s  | 102650 tokens/s |
 | bs/GPU                    | 2               | 32              | 8               | 8               | 8               | 4               | 4               | 8               |
@@ -174,9 +176,10 @@
 - Due to occasional NCCL kernel stalls in the FSDP2 configuration, some steps can be up to 3× longer than the median step duration.
 - `16fsdp` (NeMo) is slower than `16fsdp PyTorch` (c.f. above), even though theoretically it should be quicker due to the decrease in comm. traffic).
 
-| Métrique/STEP              | Sous-Métrique/STEP        | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
+| Métrique/STEP              | Sous-Métrique/STEP        | 16fsdp          | 16fscp          | 4fsdp 4fscp     | 4fsdp 4tp       | 4tp 4fscp       | 4fsdp 2tp 2fscp | 2fsdp 4tp 2fscp | 2fsdp 2tp 4fscp |
 |----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
 | Median Duration            |                           | **2436 ms**     | **837.6 ms**    | **817.2 ms**    | **1152 ms**     | **476.1 ms**    | **589.4 ms**    | **474.9 ms**    | **592.9 ms**    |
+| Est. Comm. Vol/Global Step |                           | 80.8 GB/GPU     | 80.8 GB/GPU	 | 80.8 GB/GPU	   | 159.2 GB/GPU	 | 222.4 GB/GPU	   | 129.2 GB/GPU	 | 222.4 GB/GPU	   | 129.2 GB/GPU    |
 | Est. Communication Volume  |                           | **40.4 GB/GPU** | **40.4 GB/GPU** | **40.4 GB/GPU** | **79.6 GB/GPU** | **27.8 GB/GPU** | **32.3 GB/GPU** | **27.8 GB/GPU** | **32.3 GB/GPU** |
 |                            | NVLink                    |                 |                 |                 | 69.1 GB/GPU     | 17.3 GB/GPU     | 11.5 GB/GPU     | 17.3 GB/GPU     | 11.5 GB/GPU     |
 |                            | Network                   |                 |                 |                 | 10.5 GB/GPU     | 10.5 GB/GPU     |                 | 10.5 GB/GPU     |                 |
@@ -200,7 +203,7 @@
 
 #### 4 nodes baseline A100
 
-|                           | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
+|                           | 16fsdp          | 16fscp          | 4fsdp 4fscp     | 4fsdp 4tp       | 4tp 4fscp       | 4fsdp 2tp 2fscp | 2fsdp 4tp 2fscp | 2fsdp 2tp 4fscp |
 |---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
 | Throughput                | 16461 tokens/s  | 17045 tokens/s  | 16669 tokens/s  | 42370 tokens/s  | 13466 tokens/s  | 15088 tokens/s  | 13603 tokens/s  | 13921 tokens/s  |
 | bs/GPU                    | 2               | 32              | 8               | 8               | 8               | 4               | 4               | 8               |
@@ -208,9 +211,10 @@
 | Median Est. Step Duration | 7.559 s         | 7.662 s         | 7.828 s         | 2.969 s         | 2.396 s         | 4.279 s         | 2.360 s         | 4.659 s         |
 
 
-| Métrique/STEP              | Sous-Métrique/STEP        | 16fsdp          | 16cp            | 4fsdp 4cp       | 4fsdp 4tp       | 4tp 4cp         | 4fsdp 2tp 2cp   | 2fsdp 4tp 2cp   | 2fsdp 2tp 4cp   |
+| Métrique/STEP              | Sous-Métrique/STEP        | 16fsdp          | 16fscp          | 4fsdp 4fscp     | 4fsdp 4tp       | 4tp 4fscp       | 4fsdp 2tp 2fscp | 2fsdp 4tp 2fscp | 2fsdp 2tp 4fscp |
 |----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
 | Median Duration            |                           | **9339 ms**     | **7791 ms**     | **7945 ms**     | **3007 ms**     | **2395 ms**     | **4270 ms**     | **2356 ms**     | **4629 ms**     |
+| Est. Comm. Vol/Global Step |                           | 80.8 GB/GPU     | 80.8 GB/GPU	 | 80.8 GB/GPU	   | 159.2 GB/GPU	 | 222.4 GB/GPU	   | 129.2 GB/GPU	 | 222.4 GB/GPU	   | 129.2 GB/GPU    |
 | Est. Communication Volume  |                           | **40.4 GB/GPU** | **40.4 GB/GPU** | **40.4 GB/GPU** | **79.6 GB/GPU** | **27.8 GB/GPU** | **32.3 GB/GPU** | **27.8 GB/GPU** | **32.3 GB/GPU** |
 |                            | NVLink                    |                 |                 |                 | 69.1 GB/GPU     | 17.3 GB/GPU     | 11.5 GB/GPU     | 17.3 GB/GPU     | 11.5 GB/GPU     |
 |                            | Network                   |                 |                 |                 |                 |                 |                 |                 |                 |
@@ -236,7 +240,7 @@
 
 #### 4 nodes optimized for A100
 
-|                           | 4fsdp 4tp          | 2fsdp 8cp       | 8fsdp 2cp       | 8fsdp 2tp       | 2tp 8cp         |
+|                           | 4fsdp 4tp          | 2fsdp 8fscp     | 8fsdp 2fscp     | 8fsdp 2tp       | 2tp 8fscp       |
 |---------------------------|--------------------|-----------------|-----------------|-----------------|-----------------|
 | Throughput                | **42370 tokens/s** | 17262 tokens/s  | 17640 tokens/s  | 23794 tokens/s  | 14064 tokens/s  |
 | bs/GPU                    | 8                  | 16              | 4               | 4               | 16              |
@@ -246,11 +250,34 @@
 - Additional configurations better suited to 8-GPU-per-node topologies were evaluated. `4fsdp 4tp` remains dominant, confirming that maximizing intra-node TP is the right strategy on A100. 8fsdp 2tp is the only other configuration worth noting, reaching 23794 tokens/s by partially reducing inter-node traffic compared to pure FSDP/CP configs.
 - TP could not be pushed to 8 for Qwen2.5-7B-Instruct, as its 28 Q heads per layer are not divisible by 8. The maximum achievable intra-node TP therefore remains 4, leaving the residual parallelism to cross node boundaries over the slower network fabric.
 
-### 5) FSDP2+TP+CP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
+#### 4 nodes with megatron (DP+PP+TP+CP) for A100
+
+|                           | 2dp 2pp 4tp        | 2pp 4tp 2cp     | 4dp 4tp         | 4tp 4cp         |
+|---------------------------|--------------------|-----------------|-----------------|-----------------|
+| Throughput                | **52856 tokens/s** | 48984 tokens/s  | 45666 tokens/s  | 34655 tokens/s  |
+| bs/GPU                    | 2                  | 8               | 4               | 16              |
+| GA                        | 16                 | 8               | 4               | 4               |
+| Median Est. Step Duration | 0.317 s            | 0.680 s         | 1.430 s         | 1.864 s         |
+
+| Métrique/STEP              | Sous-Métrique/STEP        | 2dp 2pp 4tp     | 2pp 4tp 2cp     | 4dp 4tp         | 4tp 4cp         |
+|----------------------------|---------------------------|-----------------|-----------------|-----------------|-----------------|
+| Est. Comm. Vol/Global Step |                           | 85.1 GB/GPU	   | 90.7 GB/GPU	 | 88.9 GB/GPU	   | 105.8 GB/GPU    |
+| Est. Communication Volume  |                           | **5.32 GB/GPU** | **11.34 GB/GPU**| **22.23 GB/GPU**| **26.45 GB/GPU**|
+|                            | NVLink                    | 5.2 GB/GPU      | 11.1 GB/GPU     | 20.08 GB/GPU    | 22.2 GB/GPU     |
+|                            | Network                   |                 |                 |                 |                 |
+|                            | NVLink + Network          | 0.12 GB/GPU     | 0.24 GB/GPU     | 2.15 GB/GPU     | 4.25 GB/GPU     |
+
+- For a fixed global batch size, DP gradient comm volume per global step doesn't depend on micro_bs thanks to `no_sync` during gradient accumulation (https://huggingface.co/docs/accelerate/v0.23.0/en/concept_guides/gradient_synchronization#solving-the-slowdown-problem). Each micro-batch's gradients are just summed into a local buffer with no communication. The DP only fires once the communication on the last micro-step before the optimizer update. So `micro_bs=2, GA=N` vs `micro_bs=1, GA=2N` just means twice as many comm-free local accumulation steps feeding the same buffer, the single DP sync at the end moves the same amount of data either way.
+- TP: communications on activations shaped [micro_batch, seq_len, hidden], fired on every micro-batch forward+backward.
+- PP: P2P send/recv of activations/gradients at stage boundaries, same shape [micro_batch, seq_len, hidden], fired on every micro-batch forward+backward.
+- CP: Ring exchange of K/V inside attention, shaped [micro_bs, seq_len/cp, hidden], fired on every micro-batch forward+backward.
+- **Conclusion: Across DP, TP, PP, and CP, total communication volume per global step in Megatron doesn't grow with GA**
+
+### 5) FSDP2+TP+FSCP (NeMo) on H100 80 Go (Qwen2.5-72B-Instruct)
 
 #### Max Throughput (number of input tokens/s) with fixed effective batch size = 512 without AC
 
-|                           | 2fsdp 4tp 8cp   | 2fsdp 32cp      | 4fsdp 4tp 4cp   | 4fsdp 16cp      | 4tp 16cp        | 8fsdp 4tp 2cp   | 8fsdp 8cp       | 16fsdp 4cp      | 16fsdp 4tp      | 32fsdp 2cp      | 64cp            |      
+|                           | 2fsdp 4tp 8fscp | 2fsdp 32fscp    | 4fsdp 4tp 4fscp | 4fsdp 16fscp    | 4tp 16fscp      | 8fsdp 4tp 2fscp | 8fsdp 8fscp     | 16fsdp 4fscp    | 16fsdp 4tp      | 32fsdp 2fscp    | 64fscp          | 
 |---------------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
 | Throughput                | 25075 tokens/s  | 36225 tokens/s  | 25369 tokens/s  | 35531 tokens/s  | 25713 tokens/s  | 26610 tokens/s  | 33158 tokens/s  | 11782 tokens/s  | 30866 tokens/s  | 35099 tokens/s  | 35467 tokens/s  |
 | bs/GPU                    | 32              | 16              | 16              | 8               | 64              | 8               | 4               | 2               | 8               | 1               | 32              |
@@ -258,14 +285,14 @@
 | AC                        | **Yes**         | No              | **Yes**         | No              | **Yes**         | **Yes**         | No              | No              | **Yes**         | No              | No              |
 | Median Est. Step Duration | 9.993 s         | 3.451 s         | 9.948 s         | 3.607 s         | 9.837 s         | 9.546 s         | 3.847 s         | 10.919 s        | 16.382 s        | 3.533 s         | 3.533 s         |
 
-- Parallelizing along the CP dimension is extremely efficient in compute.
+- Parallelizing along the FSCP dimension is extremely efficient in compute.
 
 #### Comparison with and without AC (unlike sAC, we don't control how many activation layers are dropped)
 
 <img src="asset/speed-up_using_ac.png" width="800">
 
 - Configs with TP=1 can't double the bs due to OOM crashes.
-- Quadrupling the bs/GPU by using AC speeds up training by approximately 40-50%.
+- Quadrupling the bs/GPU by using AC speeds up training by approximately 40-50%.g
 
 ### Issues
 
@@ -277,12 +304,11 @@
 - PyTorch profiler does not distinguish whether NCCL kernels use intra-node (NVLink) or inter-node (InfiniBand) communication.
 - Some NCCL kernels use both intra-node (NVLink) and inter-node (InfiniBand) communication simultaneously, making it difficult to estimate per-step bandwidth for each fabric separately (https://github.com/NVIDIA/nccl-tests/pull/239).
 - FLOPs estimation is computed analytically and excludes some operations (https://github.com/pytorch/pytorch/issues/123800).
-- CP hides communication inside of compute kernels, which inflates `Est. FLOP/s` and `Effective Comm Bandwidth` values.
+- FSCP (NeMo) hides communication inside of compute kernels, which inflates `Est. FLOP/s` and `Effective Comm Bandwidth` values.
 - `PCIe` traffic could potentially helps us estimate `Effective Network Bandwidth`, but it also hosts simple CPU-GPU traffic, so the estimation would also be noisy.
 - Under `nl.MegatronStrategy`, the entire forward-backward over all micro-batches plus the optimizer step runs inside a single `training_step`, so Lightning's per-batch hooks fire once per global step (not per micro-batch) and the fine-grained `on_before/after_backward` hooks never fire, which breaks any callback that assumes micro-batch granularity or separate forward/backward timings.
-- NeMo 2.0 (the monolithic `llm`/`nlp`/`vlm` collections used here) is officially deprecated as of the 25.11 release and is being split into focused standalone libraries: NeMo-RL (post-training/RL), NeMo Curator (data curation), NeMo AutoModel (Day-0 Hugging Face training), and Megatron-Bridge (a PyTorch-native Megatron-Core training loop). This project deliberately stayed on the older all-in-one NeMo 2.0 (yTorch Lightning), because at the time it had more mature documentation and the Lightning callback hooks gave enough control for the FLOP counter, profiler, and benchmark callbacks.
-- `calculate_per_token_loss=True` is required for CP because CP splits each sequence across ranks, so per-rank token counts are uneven and a rank can hold a fully-masked slice; the flag sums numerator and denominator across the CP group before dividing, instead of letting each rank divide by its own (possibly zero) local token count. It fixes CP-only but not CP+DP; root cause not confirmed (likely a loss-normalization ordering issue when DP is combined with CP).
-
+- NeMo 2.0 (the monolithic `llm`/`nlp`/`vlm` collections used here) is officially deprecated as of the 25.11 release and is being split into focused standalone libraries: NeMo-RL (post-training/RL), NeMo Curator (data curation), NeMo AutoModel (Day-0 Hugging Face training), and Megatron-Bridge (a PyTorch-native Megatron-Core training loop). This project deliberately stayed on the older all-in-one NeMo 2.0 (PyTorch Lightning), because at the time it had more mature documentation and the Lightning callback hooks gave enough control for the FLOP counter, profiler, and benchmark callbacks.
+- `calculate_per_token_loss=True` is required for CP because CP splits each sequence across ranks, so per-rank token counts are uneven and a rank can hold a fully-masked slice; the flag sums numerator and denominator across the CP group before dividing, instead of letting each rank divide by its own (possibly zero) local token count. It fixes CP-only but not CP+DP; root cause not confirmed (potentially DP break the behavior of `calculate_per_token_loss=True`).
 
 ## Sources
 
