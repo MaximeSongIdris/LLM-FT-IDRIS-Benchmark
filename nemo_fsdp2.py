@@ -229,6 +229,7 @@ def main() -> None:
     ## FP8
     model_accelerator = None
     if args.fp8:
+        # quickest fp8 training, with tensorwise scaling and delayed scaling
         from nemo.lightning.pytorch.accelerate.transformer_engine import TEConfig
         model_accelerator = TEConfig(fp8_autocast=True)
         

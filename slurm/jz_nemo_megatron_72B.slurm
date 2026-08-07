@@ -1,13 +1,14 @@
 #!/bin/bash
 
 ## JOB INFO
-#SBATCH --job-name=nemo+megatron+7B+2dp+4tp+2bs+ovl
+#SBATCH --job-name=nemo+megatron+72B+1dp+4pp+4tp+4cp+1bs+ovl
 #SBATCH --output=slurm_logs/%x_%j.out
 #SBATCH --error=slurm_logs/%x_%j.out
 
 ## NODE CONFIGURATION
+##SBATCH --reservation=Test_SSOS027
 #SBATCH --constraint=h100
-#SBATCH --nodes=2
+#SBATCH --nodes=16
 #SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=96
@@ -15,7 +16,7 @@
 
 ## JOB ACCOUNTABILITY
 #SBATCH --account=sos@h100
-#SBATCH --qos=qos_gpu_h100-dev
+#SBATCH --qos=qos_gpu_h100-t3
 #SBATCH --time=01:00:00
 #SBATCH --array=0
 
@@ -49,24 +50,24 @@ time srun singularity exec \
         --rdzv_backend=c10d \
         --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
         $WORK/LLM-FT-IDRIS-Benchmark/nemo_megatron.py \
-            --global-batch-size 64 \
-            --batch-size 2 \
+            --global-batch-size 512 \
+            --batch-size 1 \
             --seq-length 4096 \
             --epochs 1 \
             --test \
-            --test-nsteps 25 \
+            --test-nsteps 10 \
             --no-enable-flop-counter \
             --no-pytorch-profiler \
             --dataset-root ./sft_megatron_data \
-            --model-path $DSDIR/HuggingFace_Models/Qwen/Qwen2.5-7B-Instruct \
-            --nemo-ckpt-path ./nemo_ckpt \
+            --model-path $DSDIR/HuggingFace_Models/Qwen/Qwen2.5-72B-Instruct \
+            --nemo-ckpt-path ./nemo_ckpt2 \
             --no-activation-checkpointing \
             --no-fp8 \
             --devices-per-node $SLURM_GPUS_ON_NODE \
             --num-nodes $SLURM_NNODES \
-            --dp-size 2 \
-            --pp-size 1 \
+            --dp-size 1 \
+            --pp-size 4 \
             --tp-size 4 \
-            --cp-size 1
+            --cp-size 4
 
 date

@@ -39,17 +39,6 @@ export MASTER_PORT=29500
 export PYTHONUNBUFFERED=1
 export HF_HOME=$WORK/LLM-FT-IDRIS-Benchmark/.cache
 export CUDA_LAUNCH_BLOCKING=0
-# Only requires to do it once in a single process
-#singularity exec \
-#    --nv \
-#    --bind $WORK/LLM-FT-IDRIS-Benchmark,$DSDIR \
-#    $SINGULARITY_ALLOWED_DIR/nemo_2509.sif \
-#    python $WORK/LLM-FT-IDRIS-Benchmark/nemo_megatron.py \
-#            --prepare \
-#            --dataset-path $WORK/LLM-FT-IDRIS-Benchmark/dataset/tulu-3-sft-mixture \
-#            --dataset-root ./sft_megatron_data \
-#            --model-path $DSDIR/HuggingFace_Models/Qwen/Qwen2.5-7B-Instruct \
-#            --nemo-ckpt-path ./nemo_ckpt
 time srun singularity exec \
     --nv \
     --bind $WORK/LLM-FT-IDRIS-Benchmark,$DSDIR \
