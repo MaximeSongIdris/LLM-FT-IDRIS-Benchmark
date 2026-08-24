@@ -26,17 +26,63 @@ from nemo.automodel.misc_utils import calculate_valid_accumulate_grad_batches
 from nemo.collections import llm
 from nemo.collections.llm.gpt.data.hf_dataset import HFDatasetDataModule
 from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
+from torch.optim import Optimizer
 from torch.profiler import profile, schedule, tensorboard_trace_handler, ProfilerActivity
 from torch.utils.flop_counter import FlopCounterMode
 from transformers import AutoTokenizer
 import fiddle as fdl
 import lightning.pytorch as pl
+import torch
+import torch.cuda.nvtx as nvtx
 
 from utils import make_sft_collate, BenchmarkCallback
 
 
+class NVTXCallback(pl.Callback):
+    """Emit NVTX ranges for Forward / Backward / Optimizer using only stable hooks."""
+    def __init__(self) -> None:
+        self._fwd = None
+        self._bwd = None
+        self._opt = None
+
+    def on_train_batch_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", batch: Any, batch_idx: int) -> None:
+        self._fwd = nvtx.range_start(msg="Forward")
+
+    def on_before_backward(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", loss: torch.Tensor) -> None:
+        if self._fwd is not None:
+            nvtx.range_end(self._fwd)
+            self._fwd = None
+        self._bwd = nvtx.range_start(msg="Backward")
+
+    def on_after_backward(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        if self._bwd is not None:
+            nvtx.range_end(self._bwd)
+            self._bwd = None
+
+    def on_before_optimizer_step(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", optimizer: Optimizer) -> None:
+        self._opt = nvtx.range_start(msg="Optimizer")
+
+    def on_train_batch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", outputs: STEP_OUTPUT, batch: Any, batch_idx: int) -> None:
+        if self._opt is not None:  # no optimizer step on accumulation micro-batches
+            nvtx.range_end(self._opt)
+            self._opt = None
+
+class NsysCallback(pl.Callback):
+    def __init__(self, enabled: bool=False, start_step: int = 5, stop_step: int = 15):
+        self.enabled = enabled
+        self.start_step = start_step
+        self.stop_step = stop_step
+
+    def on_train_batch_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", batch: Any, batch_idx: int) -> None:
+        if self.enabled and batch_idx == self.start_step:
+            torch.cuda.cudart().cudaProfilerStart()
+
+    def on_train_batch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", outputs: STEP_OUTPUT, batch: Any, batch_idx: int) -> None:
+        if self.enabled and batch_idx == self.stop_step:
+            torch.cuda.cudart().cudaProfilerStop()
+
 class FlopCounterCallback(pl.Callback):
-    def __init__(self, enabled):
+    def __init__(self, enabled: bool):
         self.enabled = enabled
         self.flops_list = []
         self.ctx = None
@@ -48,7 +94,6 @@ class FlopCounterCallback(pl.Callback):
 
     def on_train_batch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", outputs: STEP_OUTPUT, batch: Any, batch_idx: int) -> None:
         if self.enabled and self.ctx:
-            import torch
             self.ctx.__exit__(None, None, None)
             self.flops_list.append(self.ctx.get_total_flops())
             self.ctx = None
@@ -61,8 +106,8 @@ class FlopCounterCallback(pl.Callback):
 
 class TorchProfilerCallback(pl.Callback):
     """PyTorch Profiler as a Lightning Callback."""
-    def __init__(self, rank: int):
-        if rank == 0:
+    def __init__(self, enabled: bool):
+        if enabled:
             self.profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 schedule=schedule(wait=16, warmup=1, active=8, repeat=1),
@@ -151,6 +196,7 @@ def parse_args() -> Namespace:
     parser.add_argument('--test-nsteps', type=int, default=100, help='Number of steps to run in test mode.')
     parser.add_argument('--enable-flop-counter', action=BooleanOptionalAction, default=False, help='Compute FLOPs per step.')
     parser.add_argument('--pytorch-profiler', action=BooleanOptionalAction, default=False, help='Whether to use pytorch profiler.')
+    parser.add_argument('--nsys-profiler', action=BooleanOptionalAction, default=False, help='Whether to use nsight systems.')
 
     # DataLoader related arguments
     parser.add_argument('--dataset-path', type=Path, help='HuggingFaceHub dataset path.')
@@ -368,9 +414,16 @@ def main() -> None:
     # FLOPs counting
     callbacks.append(FlopCounterCallback(enabled=args.enable_flop_counter and rank==0))
 
+    # NVTX annotations
+    callbacks.append(NVTXCallback())
+
+    # Nsight Profiler
+    if args.nsys_profiler:
+        callbacks.append(NsysCallback(rank==0))
+
     # Pytorch Profiler
     if args.pytorch_profiler:
-        callbacks.append(TorchProfilerCallback(rank))
+        callbacks.append(TorchProfilerCallback(rank==0))
 
     llm.api.finetune(
         model=model,

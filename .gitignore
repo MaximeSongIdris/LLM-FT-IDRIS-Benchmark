@@ -10,8 +10,9 @@ profile/
 nsight_report/
 ncu_report/
 nemo_experiments/
-nemo_ckpt/
+nemo_ckpt*/
 sft_megatron_data/
 
 # Files
 *.sif
+*.map

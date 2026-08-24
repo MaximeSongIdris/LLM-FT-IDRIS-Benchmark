@@ -289,7 +289,7 @@ def main():
     warmup_iter = iter(dataloader)
     for i in range(5):  # track the first few steps duration
         if is_main_process(): chrono.cpu_timer(start=True)
-        
+
         input_ids, labels, attention_mask = next(warmup_iter)
         input_ids = input_ids.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)

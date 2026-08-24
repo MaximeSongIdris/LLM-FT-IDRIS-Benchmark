@@ -42,7 +42,7 @@ time srun singularity exec \
     nsys profile \
         --trace osrt,cuda,cublas,cudnn,nvtx \
         --capture-range cudaProfilerApi \
-        --output nsight_report/profile_rank_%q{SLURM_PROCID} \
+        --output nsight_report/profile_rank_%q{SLURM_PROCID}_%q{SLURM_JOB_ID} \
         --force-overwrite true \
         python -u $WORK/LLM-FT-IDRIS-Benchmark/FSDP_sAC_nsight_sys.py \
             --batch-size 2 \

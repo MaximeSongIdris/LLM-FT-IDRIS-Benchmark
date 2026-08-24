@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ## JOB INFO
-#SBATCH --job-name=nemo+72B+64fsdp+1bs+ovl
+#SBATCH --job-name=nemo+72B+8fsdp+8fscp+fp8+1bs+ovl
 #SBATCH --output=slurm_logs/%x_%j.out
 #SBATCH --error=slurm_logs/%x_%j.out
 
@@ -49,26 +49,26 @@ time srun singularity exec \
         --rdzv_backend=c10d \
         --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
         $WORK/LLM-FT-IDRIS-Benchmark/nemo_fsdp2.py \
-            --global-batch-size 64 \
+            --global-batch-size 512 \
             --batch-size 1 \
             --seq-length 4096 \
             --epochs 1 \
             --test \
             --test-nsteps 10 \
             --no-enable-flop-counter \
-            --pytorch-profiler \
+            --no-pytorch-profiler \
             --dataset-path $WORK/LLM-FT-IDRIS-Benchmark/dataset/tulu-3-sft-mixture \
             --model-path $DSDIR/HuggingFace_Models/Qwen/Qwen2.5-72B-Instruct \
             --attn-implementation flash_attention_2 \
-            --no-activation-checkpointing \
-            --no-fp8 \
+            --activation-checkpointing \
+            --fp8 \
             --no-liger \
             --compile \
             --strategy FSDP2+TP+CP \
             --devices-per-node $SLURM_GPUS_ON_NODE \
             --num-nodes $SLURM_NNODES \
-            --dp-size 64 \
+            --dp-size 8 \
             --tp-size 1 \
-            --cp-size 1 \
+            --cp-size 8 \
 
 date

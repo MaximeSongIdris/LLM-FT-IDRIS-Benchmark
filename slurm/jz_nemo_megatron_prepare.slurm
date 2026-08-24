@@ -30,6 +30,7 @@ export PYTHONUNBUFFERED=1
 export HF_HOME=$WORK/LLM-FT-IDRIS-Benchmark/.cache
 
 # Only requires to do it once in a single process
+# Convert HF ckpt into Megatron ckpt
 #singularity exec \
 #    --nv \
 #    --bind $WORK/LLM-FT-IDRIS-Benchmark,$DSDIR \
